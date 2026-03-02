@@ -6,7 +6,7 @@ use super::VM;
 use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, SimpleException},
-    heap::{HeapData, HeapGuard, HeapReadOutputMut, HeapReader},
+    heap::{HeapData, HeapGuard, HeapReadOutput, HeapReader},
     heap_data::HeapDataMut,
     intern::StringId,
     resource::ResourceTracker,
@@ -258,7 +258,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             };
 
             let old_value = HeapReader::with(this.heap, |reader| {
-                let HeapReadOutputMut::Dict(mut dict) = reader.read_mut(dict_id) else {
+                let HeapReadOutput::Dict(mut dict) = reader.read(dict_id) else {
                     key.drop_with_heap(reader.heap);
                     value.drop_with_heap(reader.heap);
                     return Err(RunError::internal("DictSetItem: expected dict on heap"));
@@ -301,7 +301,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         };
 
         HeapReader::with(self.heap, |reader| {
-            if let HeapReadOutputMut::List(list) = reader.read_mut(list_id) {
+            if let HeapReadOutput::List(list) = reader.read(list_id) {
                 List::append_via_reader(list, reader, value);
                 Ok(())
             } else {
@@ -328,7 +328,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         };
 
         HeapReader::with(self.heap, |reader| {
-            let HeapReadOutputMut::Set(set) = reader.read_mut(set_id) else {
+            let HeapReadOutput::Set(set) = reader.read(set_id) else {
                 value.drop_with_heap(reader.heap);
                 return Err(RunError::internal("SetAdd: expected set on heap"));
             };
@@ -358,7 +358,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         };
 
         let old_value = HeapReader::with(self.heap, |reader| {
-            let HeapReadOutputMut::Dict(mut dict) = reader.read_mut(dict_id) else {
+            let HeapReadOutput::Dict(mut dict) = reader.read(dict_id) else {
                 key.drop_with_heap(reader.heap);
                 value.drop_with_heap(reader.heap);
                 return Err(RunError::internal("DictSetItem: expected dict on heap"));

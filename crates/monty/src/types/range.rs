@@ -11,7 +11,7 @@ use crate::{
     args::ArgValues,
     defer_drop,
     exception_private::{ExcType, RunResult},
-    heap::{Heap, HeapData, HeapId},
+    heap::{Heap, HeapData, HeapId, HeapRead, HeapReader},
     intern::Interns,
     resource::{ResourceError, ResourceTracker},
     types::{PyTrait, Type},
@@ -150,8 +150,12 @@ impl Range {
     ///
     /// Returns a new range object representing the sliced view.
     /// The new range has computed start, stop, and step values.
-    fn getitem_slice(&self, slice: &crate::types::Slice, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
-        let range_len = self.len();
+    fn getitem_slice<'a>(
+        this: &HeapRead<'a, Self>,
+        slice: &crate::types::Slice,
+        reader: &mut HeapReader<'a, Heap<impl ResourceTracker>>,
+    ) -> RunResult<Value> {
+        let range_len = this.get(reader).len();
         let (start, stop, step) = slice
             .indices(range_len)
             .map_err(|()| ExcType::value_error_slice_step_zero())?;
@@ -161,9 +165,10 @@ impl Range {
         // new_step = self.step * slice_step
         // new_stop needs to be computed based on the number of elements
 
-        let new_step = self.step.saturating_mul(step);
+        let r = this.get(reader);
+        let new_step = r.step.saturating_mul(step);
         let start_i64 = i64::try_from(start).expect("start index fits in i64");
-        let new_start = self.start.saturating_add(start_i64.saturating_mul(self.step));
+        let new_start = r.start.saturating_add(start_i64.saturating_mul(r.step));
 
         // Calculate the number of elements in the sliced range
         // try_from succeeds for non-negative step; step==0 rejected by slice.indices()
@@ -192,7 +197,7 @@ impl Range {
         let new_stop = new_start.saturating_add(num_elements_i64.saturating_mul(new_step));
 
         let new_range = Self::new(new_start, new_stop, new_step);
-        Ok(Value::Ref(heap.allocate(HeapData::Range(new_range))?))
+        Ok(Value::Ref(reader.heap.allocate(HeapData::Range(new_range))?))
     }
 }
 
@@ -211,21 +216,27 @@ impl PyTrait for Range {
         Some(self.len())
     }
 
-    fn py_getitem(&self, key: &Value, heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> RunResult<Value> {
+    fn py_getitem<'a>(
+        this: &HeapRead<'a, Self>,
+        key: &Value,
+        reader: &mut HeapReader<'a, Heap<impl ResourceTracker>>,
+        _interns: &Interns,
+    ) -> RunResult<Value> {
         // Check for slice first (Value::Ref pointing to HeapData::Slice)
         if let Value::Ref(id) = key
-            && let HeapData::Slice(slice) = heap.get(*id)
+            && let HeapData::Slice(slice) = reader.heap.get(*id)
         {
             // Clone the slice to release the borrow on heap before calling getitem_slice
             let slice = slice.clone();
-            return self.getitem_slice(&slice, heap);
+            return Self::getitem_slice(this, &slice, reader);
         }
 
         // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt
-        let index = key.as_index(heap, Type::Range)?;
+        let index = key.as_index(reader.heap, Type::Range)?;
 
         // Get range length for normalization
-        let len = i64::try_from(self.len()).expect("range length exceeds i64::MAX");
+        let r = this.get(reader);
+        let len = i64::try_from(r.len()).expect("range length exceeds i64::MAX");
         let normalized = if index < 0 { index + len } else { index };
 
         // Bounds check
@@ -236,8 +247,8 @@ impl PyTrait for Range {
         // Calculate: start + normalized * step
         // Use checked arithmetic to avoid overflow in intermediate calculations
         let offset = normalized
-            .checked_mul(self.step)
-            .and_then(|v| self.start.checked_add(v))
+            .checked_mul(r.step)
+            .and_then(|v| r.start.checked_add(v))
             .expect("range element calculation overflowed");
         Ok(Value::Int(offset))
     }

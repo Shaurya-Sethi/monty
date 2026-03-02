@@ -1320,11 +1320,7 @@ impl Value {
 
     pub fn py_getitem(&self, key: &Self, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<Self> {
         match self {
-            Self::Ref(id) => {
-                // Need to take entry out to allow mutable heap access
-                let id = *id;
-                heap.with_entry_mut(id, |heap, data| data.py_getitem(key, heap, interns))
-            }
+            Self::Ref(id) => HeapReader::with(heap, |reader| reader.read(*id).py_getitem(key, reader, interns)),
             Self::InternString(string_id) => {
                 // Check for slice first
                 if let Self::Ref(key_id) = key
@@ -1388,9 +1384,7 @@ impl Value {
         interns: &Interns,
     ) -> RunResult<()> {
         match self {
-            Self::Ref(id) => HeapReader::with(heap, |reader| {
-                reader.read_mut(*id).py_setitem(key, value, reader, interns)
-            }),
+            Self::Ref(id) => HeapReader::with(heap, |reader| reader.read(*id).py_setitem(key, value, reader, interns)),
             _ => Err(ExcType::type_error(format!(
                 "'{}' object does not support item assignment",
                 self.py_type(heap)

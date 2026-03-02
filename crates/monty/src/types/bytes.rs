@@ -75,7 +75,7 @@ use crate::{
     args::ArgValues,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult, SimpleException},
-    heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
+    heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapRead, HeapReader},
     intern::{Interns, StaticStrings, StringId},
     resource::{ResourceError, ResourceTracker},
     types::List,
@@ -260,25 +260,30 @@ impl PyTrait for Bytes {
         Some(self.0.len())
     }
 
-    fn py_getitem(&self, key: &Value, heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> RunResult<Value> {
+    fn py_getitem<'a>(
+        this: &HeapRead<'a, Self>,
+        key: &Value,
+        reader: &mut HeapReader<'a, Heap<impl ResourceTracker>>,
+        _interns: &Interns,
+    ) -> RunResult<Value> {
         // Check for slice first (Value::Ref pointing to HeapData::Slice)
         if let Value::Ref(id) = key
-            && let HeapData::Slice(slice) = heap.get(*id)
+            && let HeapData::Slice(slice) = reader.heap.get(*id)
         {
             let (start, stop, step) = slice
-                .indices(self.0.len())
+                .indices(this.get(reader).0.len())
                 .map_err(|()| ExcType::value_error_slice_step_zero())?;
 
-            let sliced_bytes = get_bytes_slice(&self.0, start, stop, step);
-            let heap_id = heap.allocate(HeapData::Bytes(Self::new(sliced_bytes)))?;
+            let sliced_bytes = get_bytes_slice(&this.get(reader).0, start, stop, step);
+            let heap_id = reader.heap.allocate(HeapData::Bytes(Self::new(sliced_bytes)))?;
             return Ok(Value::Ref(heap_id));
         }
 
         // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt
-        let index = key.as_index(heap, Type::Bytes)?;
+        let index = key.as_index(reader.heap, Type::Bytes)?;
 
         // Use helper for byte indexing
-        let byte = get_byte_at_index(&self.0, index).ok_or_else(ExcType::bytes_index_error)?;
+        let byte = get_byte_at_index(&this.get(reader).0, index).ok_or_else(ExcType::bytes_index_error)?;
         Ok(Value::Int(i64::from(byte)))
     }
 

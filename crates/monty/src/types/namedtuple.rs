@@ -23,7 +23,7 @@ use super::PyTrait;
 use crate::{
     defer_drop,
     exception_private::{ExcType, RunResult},
-    heap::{Heap, HeapId},
+    heap::{Heap, HeapId, HeapRead, HeapReader},
     intern::{Interns, StringId},
     resource::{ResourceError, ResourceTracker},
     types::{AttrCallResult, Type},
@@ -165,16 +165,21 @@ impl PyTrait for NamedTuple {
         Some(self.items.len())
     }
 
-    fn py_getitem(&self, key: &Value, heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> RunResult<Value> {
+    fn py_getitem<'a>(
+        this: &HeapRead<'a, Self>,
+        key: &Value,
+        reader: &mut HeapReader<'a, Heap<impl ResourceTracker>>,
+        _interns: &Interns,
+    ) -> RunResult<Value> {
         // Extract integer index from key, returning TypeError if not an int
         let index = match key {
             Value::Int(i) => *i,
-            _ => return Err(ExcType::type_error_indices(Type::NamedTuple, key.py_type(heap))),
+            _ => return Err(ExcType::type_error_indices(Type::NamedTuple, key.py_type(reader.heap))),
         };
 
         // Get by index with bounds checking
-        match self.get_by_index(index) {
-            Some(value) => Ok(value.clone_with_heap(heap)),
+        match this.get(reader).get_by_index(index) {
+            Some(value) => Ok(value.clone_with_heap(reader.heap)),
             None => Err(ExcType::tuple_index_error()),
         }
     }

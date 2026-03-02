@@ -15,7 +15,7 @@ use crate::{
     args::{ArgValues, KwargsValues},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult, SimpleException},
-    heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapReadMut, HeapReader},
+    heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapRead, HeapReader},
     intern::{Interns, StaticStrings},
     resource::{ResourceError, ResourceTracker},
     types::Type,
@@ -152,6 +152,23 @@ impl Dict {
         }
     }
 
+    /// Gets a value from the dict by key.
+    ///
+    /// Returns Ok(Some(value)) if key exists, Ok(None) if key doesn't exist.
+    /// Returns Err if key is unhashable.
+    pub fn get_via_reader<'a>(
+        this: &HeapRead<'a, Self>,
+        key: &Value,
+        reader: &mut HeapReader<'a, Heap<impl ResourceTracker>>,
+        interns: &Interns,
+    ) -> RunResult<Option<Value>> {
+        if let Some(index) = Self::find_index_hash_via_reader(this, key, reader, interns)?.0 {
+            Ok(Some(this.get(reader).entries[index].value.clone_with_heap(reader.heap)))
+        } else {
+            Ok(None)
+        }
+    }
+
     /// Gets a value from the dict by string key name (immutable lookup).
     ///
     /// This is an O(1) lookup that doesn't require mutable heap access.
@@ -242,7 +259,7 @@ impl Dict {
     /// owns the old value and is responsible for its refcount).
     /// Returns Err if key is unhashable.
     pub fn set_via_reader<'a>(
-        this: &mut HeapReadMut<'a, Self>,
+        this: &mut HeapRead<'a, Self>,
         key: Value,
         value: Value,
         reader: &mut HeapReader<'a, Heap<impl ResourceTracker>>,
@@ -444,7 +461,7 @@ impl Dict {
     }
 
     fn find_index_hash_via_reader<'a>(
-        this: &mut HeapReadMut<'a, Self>,
+        this: &HeapRead<'a, Self>,
         key: &Value,
         reader: &mut HeapReader<'a, Heap<impl ResourceTracker>>,
         interns: &Interns,
@@ -622,15 +639,17 @@ impl PyTrait for Dict {
         Ok(())
     }
 
-    fn py_getitem(&self, key: &Value, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<Value> {
-        match self.get(key, heap, interns)? {
-            Some(value) => Ok(value.clone_with_heap(heap)),
-            None => Err(ExcType::key_error(key, heap, interns)),
-        }
+    fn py_getitem<'a>(
+        this: &HeapRead<'a, Self>,
+        key: &Value,
+        reader: &mut HeapReader<'a, Heap<impl ResourceTracker>>,
+        interns: &Interns,
+    ) -> RunResult<Value> {
+        Self::get_via_reader(this, key, reader, interns)?.ok_or_else(|| ExcType::key_error(key, reader.heap, interns))
     }
 
     fn py_setitem<'a>(
-        this: &mut HeapReadMut<'a, Self>,
+        this: &mut HeapRead<'a, Self>,
         key: Value,
         value: Value,
         reader: &mut HeapReader<'a, Heap<impl ResourceTracker>>,

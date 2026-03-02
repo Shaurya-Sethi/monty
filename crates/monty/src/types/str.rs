@@ -13,7 +13,7 @@ use crate::{
     args::ArgValues,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
-    heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId},
+    heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapRead, HeapReader},
     intern::{Interns, StaticStrings, StringId},
     resource::{ResourceError, ResourceTracker},
     types::Type,
@@ -64,14 +64,18 @@ impl Str {
     /// Handles slice-based indexing for strings.
     ///
     /// Returns a new string containing the selected characters (Unicode-aware).
-    fn getitem_slice(&self, slice: &crate::types::Slice, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
-        let char_count = self.0.chars().count();
+    fn getitem_slice<'a>(
+        this: &HeapRead<'a, Self>,
+        slice: &crate::types::Slice,
+        reader: &mut HeapReader<'a, Heap<impl ResourceTracker>>,
+    ) -> RunResult<Value> {
+        let char_count = this.get(reader).0.chars().count();
         let (start, stop, step) = slice
             .indices(char_count)
             .map_err(|()| ExcType::value_error_slice_step_zero())?;
 
-        let result_str = get_str_slice(&self.0, start, stop, step);
-        let heap_id = heap.allocate(HeapData::Str(Self::from(result_str)))?;
+        let result_str = get_str_slice(&this.get(reader).0, start, stop, step);
+        let heap_id = reader.heap.allocate(HeapData::Str(Self::from(result_str)))?;
         Ok(Value::Ref(heap_id))
     }
 }
@@ -220,22 +224,27 @@ impl PyTrait for Str {
         Some(self.0.chars().count())
     }
 
-    fn py_getitem(&self, key: &Value, heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> RunResult<Value> {
+    fn py_getitem<'a>(
+        this: &HeapRead<'a, Self>,
+        key: &Value,
+        reader: &mut HeapReader<'a, Heap<impl ResourceTracker>>,
+        _interns: &Interns,
+    ) -> RunResult<Value> {
         // Check for slice first (Value::Ref pointing to HeapData::Slice)
         if let Value::Ref(id) = key
-            && let HeapData::Slice(slice) = heap.get(*id)
+            && let HeapData::Slice(slice) = reader.heap.get(*id)
         {
             // Clone the slice to release the borrow on heap before calling getitem_slice
             let slice = slice.clone();
-            return self.getitem_slice(&slice, heap);
+            return Self::getitem_slice(this, &slice, reader);
         }
 
         // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt
-        let index = key.as_index(heap, Type::Str)?;
+        let index = key.as_index(reader.heap, Type::Str)?;
 
         // Use single-pass indexing to avoid Vec<char> allocation
-        let c = get_char_at_index(&self.0, index).ok_or_else(ExcType::str_index_error)?;
-        Ok(allocate_char(c, heap)?)
+        let c = get_char_at_index(&this.get(reader).0, index).ok_or_else(ExcType::str_index_error)?;
+        Ok(allocate_char(c, reader.heap)?)
     }
 
     fn py_eq(

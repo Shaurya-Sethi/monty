@@ -34,7 +34,7 @@ use crate::{
     args::ArgValues,
     defer_drop,
     exception_private::{ExcType, RunResult},
-    heap::{Heap, HeapData, HeapGuard, HeapId},
+    heap::{Heap, HeapData, HeapGuard, HeapId, HeapRead, HeapReader},
     intern::{Interns, StaticStrings},
     resource::{ResourceError, ResourceTracker},
     types::Type,
@@ -166,24 +166,29 @@ impl PyTrait for Tuple {
         Some(self.items.len())
     }
 
-    fn py_getitem(&self, key: &Value, heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> RunResult<Value> {
+    fn py_getitem<'a>(
+        this: &HeapRead<'a, Self>,
+        key: &Value,
+        reader: &mut HeapReader<'a, Heap<impl ResourceTracker>>,
+        _interns: &Interns,
+    ) -> RunResult<Value> {
         // Check for slice first (Value::Ref pointing to HeapData::Slice)
         if let Value::Ref(id) = key
-            && let HeapData::Slice(slice) = heap.get(*id)
+            && let HeapData::Slice(slice) = reader.heap.get(*id)
         {
             let (start, stop, step) = slice
-                .indices(self.items.len())
+                .indices(this.get(reader).items.len())
                 .map_err(|()| ExcType::value_error_slice_step_zero())?;
 
-            let items = get_slice_items(&self.items, start, stop, step, heap)?;
-            return Ok(allocate_tuple(items.into(), heap)?);
+            let items = get_slice_items(&this.get(reader).items, start, stop, step, reader.heap)?;
+            return Ok(allocate_tuple(items.into(), reader.heap)?);
         }
 
         // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt
-        let index = key.as_index(heap, Type::Tuple)?;
+        let index = key.as_index(reader.heap, Type::Tuple)?;
 
         // Convert to usize, handling negative indices (Python-style: -1 = last element)
-        let len = i64::try_from(self.items.len()).expect("tuple length exceeds i64::MAX");
+        let len = i64::try_from(this.get(reader).items.len()).expect("tuple length exceeds i64::MAX");
         let normalized_index = if index < 0 { index + len } else { index };
 
         // Bounds check
@@ -194,7 +199,7 @@ impl PyTrait for Tuple {
         // Return clone of the item with proper refcount increment
         // Safety: normalized_index is validated to be in [0, len) above
         let idx = usize::try_from(normalized_index).expect("tuple index validated non-negative");
-        Ok(self.items[idx].clone_with_heap(heap))
+        Ok(this.get(reader).items[idx].clone_with_heap(reader.heap))
     }
 
     fn py_eq(

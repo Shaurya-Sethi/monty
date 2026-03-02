@@ -17,7 +17,7 @@ use crate::{
     args::ArgValues,
     bytecode::VM,
     exception_private::{ExcType, RunResult, SimpleException},
-    heap::{Heap, HeapId, HeapReadMut, HeapReader},
+    heap::{Heap, HeapId, HeapRead, HeapReader},
     intern::{ExtFunctionId, Interns},
     os::OsFunction,
     resource::ResourceTracker,
@@ -342,8 +342,13 @@ pub trait PyTrait {
     /// the returned value. The `interns` parameter provides access to interned string content.
     ///
     /// Default implementation returns TypeError.
-    fn py_getitem(&self, _key: &Value, heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> RunResult<Value> {
-        Err(ExcType::type_error_not_sub(self.py_type(heap)))
+    fn py_getitem<'a>(
+        this: &HeapRead<'a, Self>,
+        _key: &Value,
+        reader: &mut HeapReader<'a, Heap<impl ResourceTracker>>,
+        _interns: &Interns,
+    ) -> RunResult<Value> {
+        Err(ExcType::type_error_not_sub(this.get(reader).py_type(reader.heap)))
     }
 
     /// Python subscript set operation (`__setitem__`), e.g., `d[key] = value`.
@@ -355,7 +360,7 @@ pub trait PyTrait {
     ///
     /// Default implementation returns TypeError.
     fn py_setitem<'a>(
-        this: &mut HeapReadMut<'a, Self>,
+        this: &mut HeapRead<'a, Self>,
         _key: Value,
         _value: Value,
         reader: &mut HeapReader<'a, Heap<impl ResourceTracker>>,

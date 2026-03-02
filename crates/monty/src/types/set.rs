@@ -9,7 +9,7 @@ use crate::{
     args::ArgValues,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult, SimpleException},
-    heap::{DropWithHeap, Heap, HeapData, HeapId, HeapRead, HeapReadMut, HeapReader},
+    heap::{DropWithHeap, Heap, HeapData, HeapId, HeapRead, HeapReader},
     intern::{Interns, StaticStrings},
     resource::{ResourceError, ResourceTracker},
     types::Type,
@@ -34,7 +34,7 @@ pub(crate) struct SetStorage {
     /// Maps hash to index in entries vector.
     ///
     /// Protected in `Rc<RefCell>` to allow cloning the `Rc` during `add_via_reader`,
-    /// which avoids borrow conflicts between the `HeapReadMut` and the closure that
+    /// which avoids borrow conflicts between the `HeapRead` and the closure that
     /// needs to read entries for equality checks.
     indices: Rc<RefCell<HashTable<usize>>>,
     /// Dense vector of entries maintaining insertion order.
@@ -160,7 +160,7 @@ impl SetStorage {
     /// The caller transfers ownership of `value`. If the value is already in
     /// the set, it will be dropped.
     fn add_via_reader<'a>(
-        mut this: HeapReadMut<'a, Self>,
+        mut this: HeapRead<'a, Self>,
         value: Value,
         reader: &mut HeapReader<'a, Heap<impl ResourceTracker>>,
         interns: &Interns,
@@ -178,7 +178,7 @@ impl SetStorage {
             }
         };
 
-        // Clone the Rc to avoid borrow conflicts between the HeapReadMut and the
+        // Clone the Rc to avoid borrow conflicts between the HeapRead and the
         // closure that needs to read entries for equality checks.
         let indices = Rc::clone(&this.get(reader).indices);
         let existing = indices
@@ -587,12 +587,12 @@ impl Set {
     ///
     /// Returns `Ok(true)` if added, `Ok(false)` if already present.
     pub fn add_via_reader<'a>(
-        this: HeapReadMut<'a, Self>,
+        this: HeapRead<'a, Self>,
         value: Value,
         reader: &mut HeapReader<'a, Heap<impl ResourceTracker>>,
         interns: &Interns,
     ) -> RunResult<bool> {
-        SetStorage::add_via_reader(HeapReadMut::peel(this), value, reader, interns)
+        SetStorage::add_via_reader(HeapRead::peel(this), value, reader, interns)
     }
 
     /// Removes an element from the set.

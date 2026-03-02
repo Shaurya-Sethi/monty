@@ -10,7 +10,7 @@ use crate::{
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, RunResult},
-    heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapReadMut, HeapReader},
+    heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapRead, HeapReader},
     intern::{Interns, StaticStrings},
     resource::{ResourceError, ResourceTracker},
     sorting::{apply_permutation, sort_indices},
@@ -143,7 +143,7 @@ impl List {
     ///
     /// Returns `Value::None`, matching Python's behavior where `list.append()` returns None.
     pub fn append_via_reader<'a>(
-        mut this: HeapReadMut<'a, Self>,
+        mut this: HeapRead<'a, Self>,
         reader: &mut HeapReader<'a, Heap<impl ResourceTracker>>,
         item: Value,
     ) {
@@ -204,13 +204,17 @@ impl List {
     /// Handles slice-based indexing for lists.
     ///
     /// Returns a new list containing the selected elements.
-    fn getitem_slice(&self, slice: &crate::types::Slice, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+    fn getitem_slice<'a>(
+        this: &HeapRead<'a, Self>,
+        slice: &crate::types::Slice,
+        reader: &mut HeapReader<'a, Heap<impl ResourceTracker>>,
+    ) -> RunResult<Value> {
         let (start, stop, step) = slice
-            .indices(self.items.len())
+            .indices(this.get(reader).items.len())
             .map_err(|()| ExcType::value_error_slice_step_zero())?;
 
-        let items = get_slice_items(&self.items, start, stop, step, heap)?;
-        let heap_id = heap.allocate(HeapData::List(Self::new(items)))?;
+        let items = get_slice_items(&this.get(reader).items, start, stop, step, reader.heap)?;
+        let heap_id = reader.heap.allocate(HeapData::List(Self::new(items)))?;
         Ok(Value::Ref(heap_id))
     }
 }
@@ -234,21 +238,26 @@ impl PyTrait for List {
         Some(self.items.len())
     }
 
-    fn py_getitem(&self, key: &Value, heap: &mut Heap<impl ResourceTracker>, _interns: &Interns) -> RunResult<Value> {
+    fn py_getitem<'a>(
+        this: &HeapRead<'a, Self>,
+        key: &Value,
+        reader: &mut HeapReader<'a, Heap<impl ResourceTracker>>,
+        _interns: &Interns,
+    ) -> RunResult<Value> {
         // Check for slice first (Value::Ref pointing to HeapData::Slice)
         if let Value::Ref(id) = key
-            && let HeapData::Slice(slice) = heap.get(*id)
+            && let HeapData::Slice(slice) = reader.heap.get(*id)
         {
             // Clone the slice to release the borrow on heap before calling getitem_slice
             let slice = slice.clone();
-            return self.getitem_slice(&slice, heap);
+            return Self::getitem_slice(this, &slice, reader);
         }
 
         // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt
-        let index = key.as_index(heap, Type::List)?;
+        let index = key.as_index(reader.heap, Type::List)?;
 
         // Convert to usize, handling negative indices (Python-style: -1 = last element)
-        let len = i64::try_from(self.items.len()).expect("list length exceeds i64::MAX");
+        let len = i64::try_from(this.get(reader).items.len()).expect("list length exceeds i64::MAX");
         let normalized_index = if index < 0 { index + len } else { index };
 
         // Bounds check
@@ -259,11 +268,11 @@ impl PyTrait for List {
         // Return clone of the item with proper refcount increment
         // Safety: normalized_index is validated to be in [0, len) above
         let idx = usize::try_from(normalized_index).expect("list index validated non-negative");
-        Ok(self.items[idx].clone_with_heap(heap))
+        Ok(this.get(reader).items[idx].clone_with_heap(reader.heap))
     }
 
     fn py_setitem<'a>(
-        this: &mut HeapReadMut<'a, Self>,
+        this: &mut HeapRead<'a, Self>,
         key: Value,
         value: Value,
         reader: &mut HeapReader<'a, Heap<impl ResourceTracker>>,
@@ -846,7 +855,7 @@ pub(crate) fn get_slice_items(
     start: usize,
     stop: usize,
     step: i64,
-    heap: &mut Heap<impl ResourceTracker>,
+    heap: &Heap<impl ResourceTracker>,
 ) -> RunResult<Vec<Value>> {
     let mut result = Vec::new();
 
@@ -930,7 +939,7 @@ mod tests {
         heap.inc_ref(index_id);
 
         let result = HeapReader::with(&mut heap, |reader| {
-            reader.read_mut(list_id).py_setitem(key, new_value, reader, &interns)
+            reader.read(list_id).py_setitem(key, new_value, reader, &interns)
         });
 
         assert!(result.is_ok());
@@ -959,7 +968,7 @@ mod tests {
         heap.inc_ref(index_id);
 
         let result = HeapReader::with(&mut heap, |reader| {
-            reader.read_mut(list_id).py_setitem(key, new_value, reader, &interns)
+            reader.read(list_id).py_setitem(key, new_value, reader, &interns)
         });
 
         assert!(result.is_ok());
@@ -986,7 +995,7 @@ mod tests {
 
         // This should fail with IndexError because i64::MAX is out of bounds for a 1-element list
         let result = HeapReader::with(&mut heap, |reader| {
-            reader.read_mut(list_id).py_setitem(key, new_value, reader, &interns)
+            reader.read(list_id).py_setitem(key, new_value, reader, &interns)
         });
 
         assert!(result.is_err());
