@@ -345,10 +345,10 @@ pub trait PyTrait {
     ///
     /// Default implementation returns `Ok(None)`, indicating the type doesn't support
     /// attribute access and a generic `AttributeError` should be raised by the caller.
-    fn py_getattr(
-        &self,
+    fn py_getattr<'a>(
+        _this: &HeapRead<'a, Self>,
         _attr: &EitherStr,
-        _heap: &mut Heap<impl ResourceTracker>,
+        _reader: &mut HeapReader<'a, Heap<impl ResourceTracker>>,
         _interns: &Interns,
     ) -> RunResult<Option<AttrCallResult>> {
         Ok(None)

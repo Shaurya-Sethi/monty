@@ -12,7 +12,7 @@ use crate::{
     defer_drop,
     exception_public::{MontyException, StackFrame},
     fstring::FormatError,
-    heap::{Heap, HeapData},
+    heap::{Heap, HeapData, HeapRead, HeapReader},
     intern::{Interns, StaticStrings, StringId},
     parse::CodeRange,
     resource::ResourceTracker,
@@ -1200,10 +1200,10 @@ impl SimpleException {
     ///
     /// Handles the `.args` attribute by allocating a tuple containing the message.
     /// Returns `Err(AttributeError)` for all other attributes.
-    pub fn py_getattr(
-        &self,
+    pub fn py_getattr<'a>(
+        this: &HeapRead<'a, Self>,
         attr: &EitherStr,
-        heap: &mut Heap<impl ResourceTracker>,
+        reader: &mut HeapReader<'a, Heap<impl ResourceTracker>>,
         interns: &Interns,
     ) -> RunResult<Option<AttrCallResult>> {
         // Fast path: interned strings can be matched by ID
@@ -1213,13 +1213,13 @@ impl SimpleException {
 
         if is_args {
             // Construct tuple with 0 or 1 elements based on whether arg exists
-            let elements = if let Some(arg_str) = &self.arg {
-                let str_id = heap.allocate(HeapData::Str(Str::from(arg_str.clone())))?;
+            let elements = if let Some(arg_str) = &this.get(reader).arg {
+                let str_id = reader.heap.allocate(HeapData::Str(Str::from(arg_str.clone())))?;
                 smallvec![Value::Ref(str_id)]
             } else {
                 smallvec![]
             };
-            Ok(Some(AttrCallResult::Value(allocate_tuple(elements, heap)?)))
+            Ok(Some(AttrCallResult::Value(allocate_tuple(elements, reader.heap)?)))
         } else {
             Ok(None)
         }

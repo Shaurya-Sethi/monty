@@ -108,7 +108,7 @@ impl Path {
     ///
     /// Each suffix includes its leading dot. Returns an empty list if no extensions.
     #[must_use]
-    pub fn suffixes(&self) -> Vec<&str> {
+    pub fn suffixes(&self) -> Vec<String> {
         let name = self.name();
         if name.is_empty() || name == "." || name == ".." {
             return Vec::new();
@@ -125,7 +125,7 @@ impl Path {
             let suffix_end = search_str[abs_idx + 1..]
                 .find('.')
                 .map_or(search_str.len(), |next| abs_idx + 1 + next);
-            result.push(&name[start_idx + abs_idx..start_idx + suffix_end]);
+            result.push(name[start_idx + abs_idx..start_idx + suffix_end].to_owned());
             pos = abs_idx + 1;
         }
         result
@@ -135,20 +135,20 @@ impl Path {
     ///
     /// Absolute paths start with "/" as the first component.
     #[must_use]
-    pub fn parts(&self) -> Vec<&str> {
+    pub fn parts(&self) -> Vec<String> {
         if self.path.is_empty() {
             return Vec::new();
         }
 
         let mut parts = Vec::new();
         if self.path.starts_with('/') {
-            parts.push("/");
+            parts.push("/".to_owned());
             let rest = &self.path[1..];
             if !rest.is_empty() {
-                parts.extend(rest.split('/').filter(|s| !s.is_empty()));
+                parts.extend(rest.split('/').filter(|s| !s.is_empty()).map(str::to_owned));
             }
         } else {
-            parts.extend(self.path.split('/').filter(|s| !s.is_empty()));
+            parts.extend(self.path.split('/').filter(|s| !s.is_empty()).map(str::to_owned));
         }
         parts
     }
@@ -398,49 +398,53 @@ impl Path {
     /// `stem`, `suffix`, `suffixes`, `parts`), or `Ok(None)` if the variant doesn't
     /// correspond to a Path attribute. Used by `py_getattr` to share logic between
     /// the interned fast path and the heap string slow path.
-    fn getattr_by_static(&self, ss: StaticStrings, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Option<Value>> {
+    fn getattr_by_static<'a>(
+        this: &HeapRead<'a, Self>,
+        ss: StaticStrings,
+        reader: &mut HeapReader<'a, Heap<impl ResourceTracker>>,
+    ) -> RunResult<Option<Value>> {
         let v = match ss {
             StaticStrings::Name => {
-                let name = self.name();
-                Value::Ref(heap.allocate(HeapData::Str(Str::new(name.to_owned())))?)
+                let name = this.get(reader).name();
+                Value::Ref(reader.heap.allocate(HeapData::Str(Str::new(name.to_owned())))?)
             }
             StaticStrings::Parent => {
-                if let Some(parent) = self.parent() {
+                if let Some(parent) = this.get(reader).parent() {
                     let parent_path = Self::new(parent.to_owned());
-                    Value::Ref(heap.allocate(HeapData::Path(parent_path))?)
+                    Value::Ref(reader.heap.allocate(HeapData::Path(parent_path))?)
                 } else {
                     // Return self when there's no parent (root or relative path)
-                    let same_path = Self::new(self.as_str().to_owned());
-                    Value::Ref(heap.allocate(HeapData::Path(same_path))?)
+                    let same_path = Self::new(this.get(reader).as_str().to_owned());
+                    Value::Ref(reader.heap.allocate(HeapData::Path(same_path))?)
                 }
             }
             StaticStrings::Stem => {
-                let stem = self.stem();
-                Value::Ref(heap.allocate(HeapData::Str(Str::new(stem.to_owned())))?)
+                let stem = this.get(reader).stem();
+                Value::Ref(reader.heap.allocate(HeapData::Str(Str::new(stem.to_owned())))?)
             }
             StaticStrings::Suffix => {
-                let suffix = self.suffix();
-                Value::Ref(heap.allocate(HeapData::Str(Str::new(suffix.to_owned())))?)
+                let suffix = this.get(reader).suffix();
+                Value::Ref(reader.heap.allocate(HeapData::Str(Str::new(suffix.to_owned())))?)
             }
             StaticStrings::Suffixes => {
                 use crate::types::List;
 
-                let suffixes = self.suffixes();
+                let suffixes = this.get(reader).suffixes();
                 let mut items = Vec::with_capacity(suffixes.len());
                 for suffix in suffixes {
-                    let str_id = heap.allocate(HeapData::Str(Str::new(suffix.to_owned())))?;
+                    let str_id = reader.heap.allocate(HeapData::Str(Str::new(suffix)))?;
                     items.push(Value::Ref(str_id));
                 }
-                Value::Ref(heap.allocate(HeapData::List(List::new(items)))?)
+                Value::Ref(reader.heap.allocate(HeapData::List(List::new(items)))?)
             }
             StaticStrings::Parts => {
-                let parts = self.parts();
+                let parts = this.get(reader).parts();
                 let mut items = SmallVec::with_capacity(parts.len());
                 for part in parts {
-                    let str_id = heap.allocate(HeapData::Str(Str::new(part.to_owned())))?;
+                    let str_id = reader.heap.allocate(HeapData::Str(Str::new(part)))?;
                     items.push(Value::Ref(str_id));
                 }
-                allocate_tuple(items, heap)?
+                allocate_tuple(items, reader.heap)?
             }
             _ => return Ok(None),
         };
@@ -582,15 +586,15 @@ impl PyTrait for Path {
             .map(AttrCallResult::Value)
     }
 
-    fn py_getattr(
-        &self,
+    fn py_getattr<'a>(
+        this: &HeapRead<'a, Self>,
         attr: &EitherStr,
-        heap: &mut Heap<impl ResourceTracker>,
+        reader: &mut HeapReader<'a, Heap<impl ResourceTracker>>,
         interns: &Interns,
     ) -> RunResult<Option<AttrCallResult>> {
         // Fast path: interned strings can be matched by ID without string comparison
         if let Some(ss) = attr.static_string() {
-            if let Some(v) = self.getattr_by_static(ss, heap)? {
+            if let Some(v) = Self::getattr_by_static(this, ss, reader)? {
                 return Ok(Some(AttrCallResult::Value(v)));
             }
             return Err(ExcType::attribute_error(Type::Path, attr.as_str(interns)));
@@ -606,9 +610,7 @@ impl PyTrait for Path {
             "parts" => StaticStrings::Parts,
             _ => return Err(ExcType::attribute_error(Type::Path, attr_str)),
         };
-        let v = self
-            .getattr_by_static(ss, heap)?
-            .expect("matched attribute must produce a value");
+        let v = Self::getattr_by_static(this, ss, reader)?.expect("matched attribute must produce a value");
         Ok(Some(AttrCallResult::Value(v)))
     }
 }

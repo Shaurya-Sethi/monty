@@ -1348,26 +1348,6 @@ impl<T: ResourceTracker> Heap<T> {
         result
     }
 
-    /// Gives mutable access to a heap entry while allowing reentrant heap usage
-    /// inside the closure (e.g. to read other values or allocate results).
-    ///
-    /// The data is temporarily taken from the heap entry, so the closure can safely
-    /// mutate both the entry data and the heap (e.g. to allocate new values).
-    /// The data is automatically restored after the closure completes.
-    pub fn with_entry_mut<F, R>(&mut self, id: HeapId, f: F) -> R
-    where
-        F: FnOnce(&mut Self, HeapDataMut) -> R,
-    {
-        // Take data out in a block so the borrow of self.entries ends
-        let mut data = take_data!(self, id, "with_entry_mut");
-
-        let result = f(self, data.0.get_mut().to_mut());
-
-        // Restore data
-        restore_data!(self, id, data, "with_entry_mut");
-        result
-    }
-
     /// Temporarily takes ownership of two heap entries so their data can be borrowed
     /// simultaneously while still permitting mutable access to the heap (e.g. to
     /// allocate results). Automatically restores both entries after the closure

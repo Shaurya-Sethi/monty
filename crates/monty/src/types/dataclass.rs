@@ -356,20 +356,18 @@ impl PyTrait for Dataclass {
         }
     }
 
-    fn py_getattr(
-        &self,
+    fn py_getattr<'a>(
+        this: &HeapRead<'a, Self>,
         attr: &EitherStr,
-        heap: &mut Heap<impl ResourceTracker>,
+        reader: &mut HeapReader<'a, Heap<impl ResourceTracker>>,
         interns: &Interns,
     ) -> RunResult<Option<AttrCallResult>> {
         let attr_name = attr.as_str(interns);
-        let HeapData::Dict(attrs) = heap.get(self.attrs) else {
-            panic!("Dataclass attrs is not a Dict");
-        };
-        match attrs.get_by_str(attr_name, heap, interns) {
-            Some(value) => Ok(Some(AttrCallResult::Value(value.clone_with_heap(heap)))),
+        let attrs = Self::attrs_reader(this, reader);
+        match attrs.get(reader).get_by_str(attr_name, reader.heap, interns) {
+            Some(value) => Ok(Some(AttrCallResult::Value(value.clone_with_heap(reader.heap)))),
             // we use name here, not `self.py_type(heap)` hence returning a Ok(None)
-            None => Err(ExcType::attribute_error(self.name(interns), attr_name)),
+            None => Err(ExcType::attribute_error(this.get(reader).name(interns), attr_name)),
         }
     }
 }

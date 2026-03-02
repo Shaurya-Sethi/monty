@@ -607,24 +607,6 @@ impl PyTrait for HeapDataMut<'_> {
                 .map(AttrCallResult::Value),
         }
     }
-
-    fn py_getattr(
-        &self,
-        attr: &EitherStr,
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
-    ) -> RunResult<Option<AttrCallResult>> {
-        match self {
-            Self::Dataclass(dc) => dc.py_getattr(attr, heap, interns),
-            Self::Module(m) => Ok(m.py_getattr(attr, heap, interns)),
-            Self::NamedTuple(nt) => nt.py_getattr(attr, heap, interns),
-            Self::Slice(s) => s.py_getattr(attr, heap, interns),
-            Self::Exception(exc) => exc.py_getattr(attr, heap, interns),
-            Self::Path(p) => p.py_getattr(attr, heap, interns),
-            // All other types don't support attribute access via py_getattr
-            _ => Ok(None),
-        }
-    }
 }
 
 impl<'a> HeapReadOutput<'a> {
@@ -765,6 +747,24 @@ impl<'a> HeapReadOutput<'a> {
                 other.drop_with_heap(reader.heap);
                 Ok(false)
             }
+        }
+    }
+
+    pub fn py_getattr(
+        &self,
+        attr: &EitherStr,
+        reader: &mut HeapReader<'a, Heap<impl ResourceTracker>>,
+        interns: &Interns,
+    ) -> RunResult<Option<AttrCallResult>> {
+        match self {
+            Self::Dataclass(dc) => Dataclass::py_getattr(dc, attr, reader, interns),
+            Self::Module(m) => Ok(m.get(reader).py_getattr(attr, reader.heap, interns)),
+            Self::NamedTuple(nt) => NamedTuple::py_getattr(nt, attr, reader, interns),
+            Self::Slice(s) => Slice::py_getattr(s, attr, reader, interns),
+            Self::Exception(exc) => SimpleException::py_getattr(exc, attr, reader, interns),
+            Self::Path(p) => Path::py_getattr(p, attr, reader, interns),
+            // All other types don't support attribute access via py_getattr
+            _ => Ok(None),
         }
     }
 }

@@ -16,6 +16,7 @@ use num_traits::{ToPrimitive, Zero};
 use crate::{
     asyncio::CallId,
     builtins::Builtins,
+    defer_drop,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{DropWithHeap, Heap, HeapData, HeapId, HeapReadOutput, HeapReader},
     heap_data::HeapDataMut,
@@ -23,7 +24,7 @@ use crate::{
     modules::ModuleFunctions,
     resource::{ResourceError, ResourceTracker, check_div_size, check_lshift_size, check_pow_size, check_repeat_size},
     types::{
-        AttrCallResult, Dataclass, LongInt, Property, PyTrait, Str, Type,
+        AttrCallResult, Dataclass, Dict, FrozenSet, LongInt, Property, Set, Str, Type,
         bytes::{bytes_repr_fmt, get_byte_at_index, get_bytes_slice},
         path,
         str::{allocate_char, get_char_at_index, get_str_slice, string_repr_fmt},
@@ -1567,31 +1568,40 @@ impl Value {
     ) -> RunResult<bool> {
         match self {
             Self::Ref(heap_id) => {
-                // Use with_entry_mut to temporarily take ownership of the container.
-                // This allows iterating over container elements while calling py_eq
-                // (which needs &mut Heap for comparing nested heap values).
-                heap.with_entry_mut(*heap_id, |heap, data| match data {
-                    HeapDataMut::List(list) => {
-                        for el in list.as_slice() {
-                            if item.py_eq(el, heap, interns)? {
+                HeapReader::with(heap, |reader| match reader.read(*heap_id) {
+                    HeapReadOutput::List(list) => {
+                        let len = list.get(reader).len();
+                        for i in 0..len {
+                            let el = list.get(reader).as_slice()[i].clone_with_heap(reader.heap);
+                            defer_drop!(el, reader);
+                            if item.py_eq(el, reader.heap, interns)? {
                                 return Ok(true);
                             }
                         }
                         Ok(false)
                     }
-                    HeapDataMut::Tuple(tuple) => {
-                        for el in tuple.as_slice() {
-                            if item.py_eq(el, heap, interns)? {
+                    HeapReadOutput::Tuple(tuple) => {
+                        let len = tuple.get(reader).as_slice().len();
+                        for i in 0..len {
+                            let el = tuple.get(reader).as_slice()[i].clone_with_heap(reader.heap);
+                            defer_drop!(el, reader);
+                            if item.py_eq(el, reader.heap, interns)? {
                                 return Ok(true);
                             }
                         }
                         Ok(false)
                     }
-                    HeapDataMut::Dict(dict) => dict.get(item, heap, interns).map(|m| m.is_some()),
-                    HeapDataMut::Set(set) => set.contains(item, heap, interns),
-                    HeapDataMut::FrozenSet(fset) => fset.contains(item, heap, interns),
-                    HeapDataMut::Str(s) => str_contains(s.as_str(), item, heap, interns),
-                    HeapDataMut::Range(range) => {
+                    HeapReadOutput::Dict(dict) => match Dict::get_via_reader(&dict, item, reader, interns)? {
+                        Some(v) => {
+                            v.drop_with_heap(reader.heap);
+                            Ok(true)
+                        }
+                        None => Ok(false),
+                    },
+                    HeapReadOutput::Set(set) => Set::contains(&set, item, reader, interns),
+                    HeapReadOutput::FrozenSet(fset) => FrozenSet::contains(&fset, item, reader, interns),
+                    HeapReadOutput::Str(s) => str_contains(s.get(reader).as_str(), item, reader.heap, interns),
+                    HeapReadOutput::Range(range) => {
                         // Range containment is O(1) - check bounds and step alignment
                         let n = match item {
                             Self::Int(i) => *i,
@@ -1615,10 +1625,10 @@ impl Value {
                             }
                             _ => return Ok(false),
                         };
-                        Ok(range.contains(n))
+                        Ok(range.get(reader).contains(n))
                     }
                     other => {
-                        let type_name = other.py_type(heap);
+                        let type_name = other.py_type(reader);
                         Err(ExcType::type_error(format!(
                             "argument of type '{type_name}' is not iterable"
                         )))
@@ -1652,9 +1662,8 @@ impl Value {
     ) -> RunResult<AttrCallResult> {
         match self {
             Self::Ref(heap_id) => {
-                // Use with_entry_mut to get access to both data and heap without borrow conflicts.
-                // This allows py_getattr to allocate (for computed attributes) while we hold the data.
-                let opt_result = heap.with_entry_mut(*heap_id, |heap, data| data.py_getattr(attr, heap, interns))?;
+                let opt_result =
+                    HeapReader::with(heap, |reader| reader.read(*heap_id).py_getattr(attr, reader, interns))?;
                 if let Some(call_result) = opt_result {
                     return Ok(call_result);
                 }
@@ -2342,7 +2351,7 @@ fn extract_bigint(value: &Value, heap: &Heap<impl ResourceTracker>) -> Option<Bi
 fn str_contains(
     container_str: &str,
     item: &Value,
-    heap: &mut Heap<impl ResourceTracker>,
+    heap: &Heap<impl ResourceTracker>,
     interns: &Interns,
 ) -> RunResult<bool> {
     match item {

@@ -226,26 +226,27 @@ impl PyTrait for Slice {
         // Slice doesn't contain heap references, nothing to do
     }
 
-    fn py_getattr(
-        &self,
+    fn py_getattr<'a>(
+        this: &HeapRead<'a, Self>,
         attr: &EitherStr,
-        _heap: &mut Heap<impl ResourceTracker>,
+        reader: &mut HeapReader<'a, Heap<impl ResourceTracker>>,
         interns: &Interns,
     ) -> RunResult<Option<AttrCallResult>> {
         // Fast path: interned strings can be matched by ID without string comparison
+        let this = this.get(reader);
         if let Some(ss) = attr.static_string() {
             return match ss {
-                StaticStrings::Start => Ok(Some(AttrCallResult::Value(option_i64_to_value(self.start)))),
-                StaticStrings::Stop => Ok(Some(AttrCallResult::Value(option_i64_to_value(self.stop)))),
-                StaticStrings::Step => Ok(Some(AttrCallResult::Value(option_i64_to_value(self.step)))),
+                StaticStrings::Start => Ok(Some(AttrCallResult::Value(option_i64_to_value(this.start)))),
+                StaticStrings::Stop => Ok(Some(AttrCallResult::Value(option_i64_to_value(this.stop)))),
+                StaticStrings::Step => Ok(Some(AttrCallResult::Value(option_i64_to_value(this.step)))),
                 _ => Ok(None),
             };
         }
         // Slow path: heap-allocated strings need string comparison
         match attr.as_str(interns) {
-            "start" => Ok(Some(AttrCallResult::Value(option_i64_to_value(self.start)))),
-            "stop" => Ok(Some(AttrCallResult::Value(option_i64_to_value(self.stop)))),
-            "step" => Ok(Some(AttrCallResult::Value(option_i64_to_value(self.step)))),
+            "start" => Ok(Some(AttrCallResult::Value(option_i64_to_value(this.start)))),
+            "stop" => Ok(Some(AttrCallResult::Value(option_i64_to_value(this.stop)))),
+            "step" => Ok(Some(AttrCallResult::Value(option_i64_to_value(this.step)))),
             _ => Ok(None),
         }
     }

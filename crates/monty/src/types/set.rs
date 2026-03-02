@@ -657,8 +657,13 @@ impl Set {
     }
 
     /// Checks if the set contains a value.
-    pub fn contains(&self, value: &Value, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<bool> {
-        self.0.contains(value, heap, interns)
+    pub fn contains<'a>(
+        this: &HeapRead<'a, Self>,
+        value: &Value,
+        reader: &mut HeapReader<'a, Heap<impl ResourceTracker>>,
+        interns: &Interns,
+    ) -> RunResult<bool> {
+        SetStorage::contains_via_reader(this.peel_ref(), value, reader, interns)
     }
 
     /// Returns the internal storage (for set operations between Set and FrozenSet).
@@ -1118,8 +1123,13 @@ impl FrozenSet {
     }
 
     /// Checks if the frozenset contains a value.
-    pub fn contains(&self, value: &Value, heap: &mut Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<bool> {
-        self.0.contains(value, heap, interns)
+    pub fn contains<'a>(
+        this: &HeapRead<'a, Self>,
+        value: &Value,
+        reader: &mut HeapReader<'a, Heap<impl ResourceTracker>>,
+        interns: &Interns,
+    ) -> RunResult<bool> {
+        SetStorage::contains_via_reader(this.peel_ref(), value, reader, interns)
     }
 
     /// Computes the hash of this frozenset.

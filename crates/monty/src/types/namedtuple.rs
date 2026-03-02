@@ -262,18 +262,18 @@ impl PyTrait for NamedTuple {
         Ok(())
     }
 
-    fn py_getattr(
-        &self,
+    fn py_getattr<'a>(
+        this: &HeapRead<'a, Self>,
         attr: &EitherStr,
-        heap: &mut Heap<impl ResourceTracker>,
+        reader: &mut HeapReader<'a, Heap<impl ResourceTracker>>,
         interns: &Interns,
     ) -> RunResult<Option<AttrCallResult>> {
         let attr_name = attr.as_str(interns);
-        if let Some(value) = self.get_by_name(attr_name, interns) {
-            Ok(Some(AttrCallResult::Value(value.clone_with_heap(heap))))
+        if let Some(value) = this.get(reader).get_by_name(attr_name, interns) {
+            Ok(Some(AttrCallResult::Value(value.clone_with_heap(reader.heap))))
         } else {
             // we use name here, not `self.py_type(heap)` hence returning a Ok(None)
-            Err(ExcType::attribute_error(self.name(interns), attr_name))
+            Err(ExcType::attribute_error(this.get(reader).name(interns), attr_name))
         }
     }
 }

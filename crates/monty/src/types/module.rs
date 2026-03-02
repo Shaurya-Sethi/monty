@@ -105,7 +105,7 @@ impl Module {
     pub fn py_getattr(
         &self,
         attr: &EitherStr,
-        heap: &mut Heap<impl ResourceTracker>,
+        heap: &Heap<impl ResourceTracker>,
         interns: &Interns,
     ) -> Option<AttrCallResult> {
         let value = self.attrs.get_by_str(attr.as_str(interns), heap, interns)?;
