@@ -497,52 +497,6 @@ impl PyTrait for HeapDataMut<'_> {
         }
     }
 
-    fn py_sub(
-        &self,
-        other: &Self,
-        heap: &mut Heap<impl ResourceTracker>,
-    ) -> Result<Option<Value>, crate::resource::ResourceError> {
-        match (self, other) {
-            (Self::Str(a), Self::Str(b)) => a.py_sub(b, heap),
-            (Self::Bytes(a), Self::Bytes(b)) => a.py_sub(b, heap),
-            (Self::List(a), Self::List(b)) => a.py_sub(b, heap),
-            (Self::Tuple(a), Self::Tuple(b)) => a.py_sub(b, heap),
-            (Self::Dict(a), Self::Dict(b)) => a.py_sub(b, heap),
-            (Self::Set(a), Self::Set(b)) => a.py_sub(b, heap),
-            (Self::FrozenSet(a), Self::FrozenSet(b)) => a.py_sub(b, heap),
-            (Self::LongInt(a), Self::LongInt(b)) => {
-                let bi = a.inner() - b.inner();
-                Ok(LongInt::new(bi).into_value(heap).map(Some)?)
-            }
-            // Cells don't support arithmetic operations
-            _ => Ok(None),
-        }
-    }
-
-    fn py_mod(
-        &self,
-        other: &Self,
-        heap: &mut Heap<impl ResourceTracker>,
-    ) -> crate::exception_private::RunResult<Option<Value>> {
-        match (self, other) {
-            (Self::Str(a), Self::Str(b)) => a.py_mod(b, heap),
-            (Self::Bytes(a), Self::Bytes(b)) => a.py_mod(b, heap),
-            (Self::List(a), Self::List(b)) => a.py_mod(b, heap),
-            (Self::Tuple(a), Self::Tuple(b)) => a.py_mod(b, heap),
-            (Self::Dict(a), Self::Dict(b)) => a.py_mod(b, heap),
-            (Self::LongInt(a), Self::LongInt(b)) => {
-                if b.is_zero() {
-                    Err(crate::exception_private::ExcType::zero_division().into())
-                } else {
-                    let bi = a.inner().mod_floor(b.inner());
-                    Ok(LongInt::new(bi).into_value(heap).map(Some)?)
-                }
-            }
-            // Cells don't support arithmetic operations
-            _ => Ok(None),
-        }
-    }
-
     fn py_call_attr(
         &mut self,
         heap: &mut Heap<impl ResourceTracker>,
@@ -725,6 +679,42 @@ impl<'a> HeapReadOutput<'a> {
                 Ok(LongInt::new(bi).into_value(reader.heap).map(Some)?)
             }
             // Cells and Dataclasses don't support arithmetic operations
+            _ => Ok(None),
+        }
+    }
+
+    pub fn py_sub(
+        &self,
+        other: &Self,
+        reader: &mut HeapReader<'a, Heap<impl ResourceTracker>>,
+    ) -> Result<Option<Value>, crate::resource::ResourceError> {
+        match (self, other) {
+            (Self::Set(a), Self::Set(b)) => Set::py_sub(a, b, reader),
+            (Self::FrozenSet(a), Self::FrozenSet(b)) => FrozenSet::py_sub(a, b, reader),
+            (Self::LongInt(a), Self::LongInt(b)) => {
+                let bi = a.get(reader).inner() - b.get(reader).inner();
+                Ok(LongInt::new(bi).into_value(reader.heap).map(Some)?)
+            }
+            // Most types don't support subtraction
+            _ => Ok(None),
+        }
+    }
+
+    pub fn py_mod(
+        &self,
+        other: &Self,
+        reader: &mut HeapReader<'a, Heap<impl ResourceTracker>>,
+    ) -> RunResult<Option<Value>> {
+        match (self, other) {
+            (Self::LongInt(a), Self::LongInt(b)) => {
+                if b.get(reader).is_zero() {
+                    Err(ExcType::zero_division().into())
+                } else {
+                    let bi = a.get(reader).inner().mod_floor(b.get(reader).inner());
+                    Ok(LongInt::new(bi).into_value(reader.heap).map(Some)?)
+                }
+            }
+            // Most types don't support modulo
             _ => Ok(None),
         }
     }

@@ -194,15 +194,11 @@ pub trait PyTrait {
     ///
     /// Returns `Ok(None)` if the operation is not supported for these types,
     /// `Ok(Some(value))` on success, or `Err(ResourceError)` if allocation fails.
-    fn py_sub(&self, _other: &Self, _heap: &mut Heap<impl ResourceTracker>) -> Result<Option<Value>, ResourceError> {
-        Ok(None)
-    }
-
-    /// Python modulus (`__mod__`).
-    ///
-    /// Returns `Ok(None)` if the operation is not supported for these types,
-    /// `Ok(Some(value))` on success, or `Err(RunError)` if an error occurs.
-    fn py_mod(&self, _other: &Self, _heap: &mut Heap<impl ResourceTracker>) -> RunResult<Option<Value>> {
+    fn py_sub<'a>(
+        _this: &HeapRead<'a, Self>,
+        _other: &HeapRead<'a, Self>,
+        _reader: &mut HeapReader<'a, Heap<impl ResourceTracker>>,
+    ) -> Result<Option<Value>, ResourceError> {
         Ok(None)
     }
 

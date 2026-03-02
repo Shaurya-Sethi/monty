@@ -12,7 +12,6 @@ use std::{
 
 use ahash::AHashSet;
 use bytemuck::TransparentWrapper;
-use num_integer::Integer;
 use smallvec::SmallVec;
 
 use crate::{
@@ -467,52 +466,6 @@ impl HeapData {
             Self::Path(p) => Cow::Owned(p.as_str().to_owned()),
             // All other types use repr
             _ => self.py_repr(heap, interns),
-        }
-    }
-
-    pub fn py_sub(
-        &self,
-        other: &Self,
-        heap: &mut Heap<impl ResourceTracker>,
-    ) -> Result<Option<Value>, crate::resource::ResourceError> {
-        match (self, other) {
-            (Self::Str(a), Self::Str(b)) => a.py_sub(b, heap),
-            (Self::Bytes(a), Self::Bytes(b)) => a.py_sub(b, heap),
-            (Self::List(a), Self::List(b)) => a.py_sub(b, heap),
-            (Self::Tuple(a), Self::Tuple(b)) => a.py_sub(b, heap),
-            (Self::Dict(a), Self::Dict(b)) => a.py_sub(b, heap),
-            (Self::Set(a), Self::Set(b)) => a.py_sub(b, heap),
-            (Self::FrozenSet(a), Self::FrozenSet(b)) => a.py_sub(b, heap),
-            (Self::LongInt(a), Self::LongInt(b)) => {
-                let bi = a.inner() - b.inner();
-                Ok(LongInt::new(bi).into_value(heap).map(Some)?)
-            }
-            // Cells don't support arithmetic operations
-            _ => Ok(None),
-        }
-    }
-
-    pub fn py_mod(
-        &self,
-        other: &Self,
-        heap: &mut Heap<impl ResourceTracker>,
-    ) -> crate::exception_private::RunResult<Option<Value>> {
-        match (self, other) {
-            (Self::Str(a), Self::Str(b)) => a.py_mod(b, heap),
-            (Self::Bytes(a), Self::Bytes(b)) => a.py_mod(b, heap),
-            (Self::List(a), Self::List(b)) => a.py_mod(b, heap),
-            (Self::Tuple(a), Self::Tuple(b)) => a.py_mod(b, heap),
-            (Self::Dict(a), Self::Dict(b)) => a.py_mod(b, heap),
-            (Self::LongInt(a), Self::LongInt(b)) => {
-                if b.is_zero() {
-                    Err(crate::exception_private::ExcType::zero_division().into())
-                } else {
-                    let bi = a.inner().mod_floor(b.inner());
-                    Ok(LongInt::new(bi).into_value(heap).map(Some)?)
-                }
-            }
-            // Cells don't support arithmetic operations
-            _ => Ok(None),
         }
     }
 
@@ -1325,37 +1278,6 @@ impl<T: ResourceTracker> Heap<T> {
         let heap = &mut *vm.heap;
         restore_data!(heap, id, data, "call_attr_raw");
         result
-    }
-
-    /// Temporarily takes ownership of two heap entries so their data can be borrowed
-    /// simultaneously while still permitting mutable access to the heap (e.g. to
-    /// allocate results). Automatically restores both entries after the closure
-    /// finishes executing.
-    pub fn with_two<F, R>(&mut self, left: HeapId, right: HeapId, f: F) -> R
-    where
-        F: FnOnce(&mut Self, &HeapData, &HeapData) -> R,
-    {
-        if left == right {
-            // Same value - take data once and pass it twice
-            let mut data = take_data!(self, left, "with_two");
-
-            let r = data.0.get_mut();
-            let result = f(self, r, r);
-
-            restore_data!(self, left, data, "with_two");
-            result
-        } else {
-            // Different values - take both
-            let mut left_data = take_data!(self, left, "with_two (left)");
-            let mut right_data = take_data!(self, right, "with_two (right)");
-
-            let result = f(self, left_data.0.get_mut(), right_data.0.get_mut());
-
-            // Restore in reverse order
-            restore_data!(self, right, right_data, "with_two (right)");
-            restore_data!(self, left, left_data, "with_two (left)");
-            result
-        }
     }
 
     /// Returns the reference count for the heap entry at the given ID.

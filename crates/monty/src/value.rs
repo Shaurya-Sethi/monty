@@ -558,7 +558,11 @@ impl Value {
                 }
             }
             // LongInt - LongInt
-            (Self::Ref(id1), Self::Ref(id2)) => heap.with_two(*id1, *id2, |heap, left, right| left.py_sub(right, heap)),
+            (Self::Ref(id1), Self::Ref(id2)) => HeapReader::with(heap, |reader| {
+                let left = reader.read(*id1);
+                let right = reader.read(*id2);
+                left.py_sub(&right, reader)
+            }),
             // Float - Float
             (Self::Float(a), Self::Float(b)) => Ok(Some(Self::Float(a - b))),
             // Int - Float and Float - Int
@@ -611,7 +615,11 @@ impl Value {
                 Ok(Some(LongInt::new(bi).into_value(heap)?))
             }
             // LongInt % LongInt
-            (Self::Ref(id1), Self::Ref(id2)) => heap.with_two(*id1, *id2, |heap, left, right| left.py_mod(right, heap)),
+            (Self::Ref(id1), Self::Ref(id2)) => HeapReader::with(heap, |reader| {
+                let left = reader.read(*id1);
+                let right = reader.read(*id2);
+                left.py_mod(&right, reader)
+            }),
             (Self::Float(v1), Self::Float(v2)) => {
                 if *v2 == 0.0 {
                     Err(ExcType::zero_division().into())

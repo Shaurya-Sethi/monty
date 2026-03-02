@@ -840,15 +840,14 @@ impl PyTrait for Set {
         }
     }
 
-    fn py_sub(
-        &self,
-        _other: &Self,
-        _heap: &mut Heap<impl ResourceTracker>,
-    ) -> Result<Option<Value>, crate::resource::ResourceError> {
-        // This is called from heap.rs with two Sets
-        // We need interns for contains check, but py_sub doesn't have it
-        // This is a limitation - we'll need to handle this differently
-        // For now, return None to indicate not supported via this path
+    fn py_sub<'a>(
+        _this: &HeapRead<'a, Self>,
+        _other: &HeapRead<'a, Self>,
+        _reader: &mut HeapReader<'a, Heap<impl ResourceTracker>>,
+    ) -> Result<Option<Value>, ResourceError> {
+        // TODO: implement set difference via HeapReader
+        // Previously blocked because py_sub didn't have access to interns for contains checks;
+        // the HeapReader pattern should make this possible now.
         Ok(None)
     }
 }
@@ -1335,12 +1334,14 @@ impl PyTrait for FrozenSet {
         }
     }
 
-    fn py_sub(
-        &self,
-        _other: &Self,
-        _heap: &mut Heap<impl ResourceTracker>,
-    ) -> Result<Option<Value>, crate::resource::ResourceError> {
-        // Same limitation as Set - needs interns
+    fn py_sub<'a>(
+        _this: &HeapRead<'a, Self>,
+        _other: &HeapRead<'a, Self>,
+        _reader: &mut HeapReader<'a, Heap<impl ResourceTracker>>,
+    ) -> Result<Option<Value>, ResourceError> {
+        // TODO: implement frozenset difference via HeapReader
+        // Previously blocked because py_sub didn't have access to interns for contains checks;
+        // the HeapReader pattern should make this possible now.
         Ok(None)
     }
 }
