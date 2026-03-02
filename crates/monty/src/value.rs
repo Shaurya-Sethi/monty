@@ -462,9 +462,11 @@ impl Value {
             // Int + Float and Float + Int
             (Self::Int(a), Self::Float(b)) => Ok(Some(Self::Float(*a as f64 + b))),
             (Self::Float(a), Self::Int(b)) => Ok(Some(Self::Float(a + *b as f64))),
-            (Self::Ref(id1), Self::Ref(id2)) => {
-                heap.with_two(*id1, *id2, |heap, left, right| left.py_add(right, heap, interns))
-            }
+            (Self::Ref(id1), Self::Ref(id2)) => HeapReader::with(heap, |reader| {
+                let left = reader.read(*id1);
+                let right = reader.read(*id2);
+                left.py_add(&right, reader, interns)
+            }),
             (Self::InternString(s1), Self::InternString(s2)) => {
                 let concat = format!("{}{}", interns.get_str(*s1), interns.get_str(*s2));
                 Ok(Some(Self::Ref(heap.allocate(HeapData::Str(concat.into()))?)))

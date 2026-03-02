@@ -227,17 +227,20 @@ impl PyTrait for Tuple {
         Ok(true)
     }
 
-    fn py_add(
-        &self,
-        other: &Self,
-        heap: &mut Heap<impl ResourceTracker>,
+    fn py_add<'a>(
+        this: &HeapRead<'a, Self>,
+        other: &HeapRead<'a, Self>,
+        reader: &mut HeapReader<'a, Heap<impl ResourceTracker>>,
         _interns: &Interns,
     ) -> Result<Option<Value>, crate::resource::ResourceError> {
-        // Clone both tuples' contents with proper refcounting
-        let mut result: TupleVec = self.items.iter().map(|obj| obj.clone_with_heap(heap)).collect();
-        let other_cloned = other.items.iter().map(|obj| obj.clone_with_heap(heap));
-        result.extend(other_cloned);
-        Ok(Some(allocate_tuple(result, heap)?))
+        let result = this
+            .get(reader)
+            .items
+            .iter()
+            .chain(&other.get(reader).items)
+            .map(|obj| obj.clone_with_heap(reader.heap))
+            .collect();
+        Ok(Some(allocate_tuple(result, reader.heap)?))
     }
 
     /// Pushes all heap IDs contained in this tuple onto the stack.

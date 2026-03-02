@@ -279,14 +279,14 @@ impl PyTrait for Str {
         self.0.clone().into()
     }
 
-    fn py_add(
-        &self,
-        other: &Self,
-        heap: &mut Heap<impl ResourceTracker>,
+    fn py_add<'a>(
+        this: &HeapRead<'a, Self>,
+        other: &HeapRead<'a, Self>,
+        reader: &mut HeapReader<'a, Heap<impl ResourceTracker>>,
         _interns: &Interns,
     ) -> Result<Option<Value>, crate::resource::ResourceError> {
-        let result = format!("{}{}", self.0, other.0);
-        let id = heap.allocate(HeapData::Str(result.into()))?;
+        let result = format!("{}{}", this.get(reader).0, other.get(reader).0);
+        let id = reader.heap.allocate(HeapData::Str(result.into()))?;
         Ok(Some(Value::Ref(id)))
     }
 

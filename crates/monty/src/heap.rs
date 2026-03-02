@@ -470,27 +470,6 @@ impl HeapData {
         }
     }
 
-    pub fn py_add(
-        &self,
-        other: &Self,
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
-    ) -> Result<Option<Value>, crate::resource::ResourceError> {
-        match (self, other) {
-            (Self::Str(a), Self::Str(b)) => a.py_add(b, heap, interns),
-            (Self::Bytes(a), Self::Bytes(b)) => a.py_add(b, heap, interns),
-            (Self::List(a), Self::List(b)) => a.py_add(b, heap, interns),
-            (Self::Tuple(a), Self::Tuple(b)) => a.py_add(b, heap, interns),
-            (Self::Dict(a), Self::Dict(b)) => a.py_add(b, heap, interns),
-            (Self::LongInt(a), Self::LongInt(b)) => {
-                let bi = a.inner() + b.inner();
-                Ok(LongInt::new(bi).into_value(heap).map(Some)?)
-            }
-            // Cells and Dataclasses don't support arithmetic operations
-            _ => Ok(None),
-        }
-    }
-
     pub fn py_sub(
         &self,
         other: &Self,

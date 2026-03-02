@@ -384,17 +384,20 @@ impl PyTrait for List {
         repr_sequence_fmt('[', ']', &self.items, f, heap, heap_ids, interns)
     }
 
-    fn py_add(
-        &self,
-        other: &Self,
-        heap: &mut Heap<impl ResourceTracker>,
+    fn py_add<'a>(
+        this: &HeapRead<'a, Self>,
+        other: &HeapRead<'a, Self>,
+        reader: &mut HeapReader<'a, Heap<impl ResourceTracker>>,
         _interns: &Interns,
     ) -> Result<Option<Value>, crate::resource::ResourceError> {
-        // Clone both lists' contents with proper refcounting
-        let mut result: Vec<Value> = self.items.iter().map(|obj| obj.clone_with_heap(heap)).collect();
-        let other_cloned: Vec<Value> = other.items.iter().map(|obj| obj.clone_with_heap(heap)).collect();
-        result.extend(other_cloned);
-        let id = heap.allocate(HeapData::List(Self::new(result)))?;
+        let result: Vec<Value> = this
+            .get(reader)
+            .items
+            .iter()
+            .chain(&other.get(reader).items)
+            .map(|obj| obj.clone_with_heap(reader.heap))
+            .collect();
+        let id = reader.heap.allocate(HeapData::List(Self::new(result)))?;
         Ok(Some(Value::Ref(id)))
     }
 

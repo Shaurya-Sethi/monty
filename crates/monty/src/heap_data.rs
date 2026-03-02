@@ -497,27 +497,6 @@ impl PyTrait for HeapDataMut<'_> {
         }
     }
 
-    fn py_add(
-        &self,
-        other: &Self,
-        heap: &mut Heap<impl ResourceTracker>,
-        interns: &Interns,
-    ) -> Result<Option<Value>, crate::resource::ResourceError> {
-        match (self, other) {
-            (Self::Str(a), Self::Str(b)) => a.py_add(b, heap, interns),
-            (Self::Bytes(a), Self::Bytes(b)) => a.py_add(b, heap, interns),
-            (Self::List(a), Self::List(b)) => a.py_add(b, heap, interns),
-            (Self::Tuple(a), Self::Tuple(b)) => a.py_add(b, heap, interns),
-            (Self::Dict(a), Self::Dict(b)) => a.py_add(b, heap, interns),
-            (Self::LongInt(a), Self::LongInt(b)) => {
-                let bi = a.inner() + b.inner();
-                Ok(LongInt::new(bi).into_value(heap).map(Some)?)
-            }
-            // Cells and Dataclasses don't support arithmetic operations
-            _ => Ok(None),
-        }
-    }
-
     fn py_sub(
         &self,
         other: &Self,
@@ -726,6 +705,27 @@ impl<'a> HeapReadOutput<'a> {
             HeapReadOutput::Module(_) => Type::Module,
             HeapReadOutput::Coroutine(_) | HeapReadOutput::GatherFuture(_) => Type::Coroutine,
             HeapReadOutput::Path(_) => Type::Path,
+        }
+    }
+
+    pub fn py_add(
+        &self,
+        other: &Self,
+        reader: &mut HeapReader<'a, Heap<impl ResourceTracker>>,
+        interns: &Interns,
+    ) -> Result<Option<Value>, crate::resource::ResourceError> {
+        match (self, other) {
+            (Self::Str(a), Self::Str(b)) => Str::py_add(a, b, reader, interns),
+            (Self::Bytes(a), Self::Bytes(b)) => Bytes::py_add(a, b, reader, interns),
+            (Self::List(a), Self::List(b)) => List::py_add(a, b, reader, interns),
+            (Self::Tuple(a), Self::Tuple(b)) => Tuple::py_add(a, b, reader, interns),
+            (Self::Dict(a), Self::Dict(b)) => Dict::py_add(a, b, reader, interns),
+            (Self::LongInt(a), Self::LongInt(b)) => {
+                let bi = a.get(reader).inner() + b.get(reader).inner();
+                Ok(LongInt::new(bi).into_value(reader.heap).map(Some)?)
+            }
+            // Cells and Dataclasses don't support arithmetic operations
+            _ => Ok(None),
         }
     }
 

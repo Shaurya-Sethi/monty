@@ -181,10 +181,10 @@ pub trait PyTrait {
     /// `Ok(Some(value))` on success, or `Err(ResourceError)` if allocation fails.
     ///
     /// The `interns` parameter provides access to interned string content for InternString/InternBytes.
-    fn py_add(
-        &self,
-        _other: &Self,
-        _heap: &mut Heap<impl ResourceTracker>,
+    fn py_add<'a>(
+        _this: &HeapRead<'a, Self>,
+        _other: &HeapRead<'a, Self>,
+        _reader: &mut HeapReader<'a, Heap<impl ResourceTracker>>,
         _interns: &Interns,
     ) -> Result<Option<Value>, ResourceError> {
         Ok(None)
