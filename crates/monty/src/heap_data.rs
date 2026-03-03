@@ -716,7 +716,7 @@ impl<'a> HeapReadOutput<'a> {
             Self::Dict(d) => Dict::py_iadd(d, other, reader, self_id, interns),
             _ => {
                 // Drop other if it's a Ref (ensure proper refcounting for unsupported types)
-                other.drop_with_heap(reader.heap);
+                other.drop_with_heap(reader);
                 Ok(false)
             }
         }

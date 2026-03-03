@@ -139,8 +139,8 @@ impl Dataclass {
                 _ => "<unknown>".to_string(),
             };
             // Drop the values we were given ownership of
-            name.drop_with_heap(reader.heap);
-            value.drop_with_heap(reader.heap);
+            name.drop_with_heap(reader);
+            value.drop_with_heap(reader);
             return Err(ExcType::frozen_instance_error(&attr_name));
         }
         Dict::set_via_reader(&mut Self::attrs_reader(this, reader), name, value, reader, interns)

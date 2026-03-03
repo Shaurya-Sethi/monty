@@ -259,8 +259,8 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
             let old_value = HeapReader::with(this.heap, |reader| {
                 let HeapReadOutput::Dict(mut dict) = reader.read(dict_id) else {
-                    key.drop_with_heap(reader.heap);
-                    value.drop_with_heap(reader.heap);
+                    key.drop_with_heap(reader);
+                    value.drop_with_heap(reader);
                     return Err(RunError::internal("DictSetItem: expected dict on heap"));
                 };
 
@@ -305,7 +305,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 List::append_via_reader(list, reader, value);
                 Ok(())
             } else {
-                value.drop_with_heap(reader.heap);
+                value.drop_with_heap(reader);
                 Err(RunError::internal("ListAppend: expected list on heap"))
             }
         })
@@ -329,7 +329,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
         HeapReader::with(self.heap, |reader| {
             let HeapReadOutput::Set(set) = reader.read(set_id) else {
-                value.drop_with_heap(reader.heap);
+                value.drop_with_heap(reader);
                 return Err(RunError::internal("SetAdd: expected set on heap"));
             };
 
@@ -359,8 +359,8 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
         let old_value = HeapReader::with(self.heap, |reader| {
             let HeapReadOutput::Dict(mut dict) = reader.read(dict_id) else {
-                key.drop_with_heap(reader.heap);
-                value.drop_with_heap(reader.heap);
+                key.drop_with_heap(reader);
+                value.drop_with_heap(reader);
                 return Err(RunError::internal("DictSetItem: expected dict on heap"));
             };
 

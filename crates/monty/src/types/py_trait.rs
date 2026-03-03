@@ -217,7 +217,7 @@ pub trait PyTrait {
         _self_id: Option<HeapId>,
         _interns: &Interns,
     ) -> Result<bool, ResourceError> {
-        other.drop_with_heap(reader.heap);
+        other.drop_with_heap(reader);
         Ok(false)
     }
 

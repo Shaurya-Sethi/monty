@@ -178,18 +178,18 @@ impl SetStorage {
             Ok(Some(h)) => h,
             Ok(None) => {
                 let err = ExcType::type_error_unhashable_set_element(value.py_type(reader.heap));
-                value.drop_with_heap(reader.heap);
+                value.drop_with_heap(reader);
                 return Err(err);
             }
             Err(e) => {
-                value.drop_with_heap(reader.heap);
+                value.drop_with_heap(reader);
                 return Err(e.into());
             }
         };
 
         if Self::contains_known_hash(&this, &value, hash, reader, interns)? {
             // Value already in set, drop the new value
-            value.drop_with_heap(reader.heap);
+            value.drop_with_heap(reader);
             Ok(false)
         } else {
             // Add new entry

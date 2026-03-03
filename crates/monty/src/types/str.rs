@@ -313,7 +313,7 @@ impl PyTrait for Str {
                     return Ok(false);
                 }
                 // Drop the other value - we've consumed it
-                other.drop_with_heap(reader.heap);
+                other.drop_with_heap(reader);
                 Ok(true)
             }
             Value::InternString(string_id) => {

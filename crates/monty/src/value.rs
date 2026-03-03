@@ -1607,7 +1607,7 @@ impl Value {
                     }
                     HeapReadOutput::Dict(dict) => match Dict::get_via_reader(&dict, item, reader, interns)? {
                         Some(v) => {
-                            v.drop_with_heap(reader.heap);
+                            v.drop_with_heap(reader);
                             Ok(true)
                         }
                         None => Ok(false),
@@ -1721,12 +1721,12 @@ impl Value {
                 HeapReadOutput::Dataclass(mut dc) => {
                     let name_value = Self::InternString(name_id);
                     let old_value = Dataclass::set_attr(&mut dc, name_value, value, reader, interns)?;
-                    old_value.drop_with_heap(reader.heap);
+                    old_value.drop_with_heap(reader);
                     Ok(())
                 }
                 other => {
                     let py_type = other.py_type(reader);
-                    value.drop_with_heap(reader.heap);
+                    value.drop_with_heap(reader);
                     Err(ExcType::attribute_error_no_setattr(py_type, attr_name))
                 }
             })

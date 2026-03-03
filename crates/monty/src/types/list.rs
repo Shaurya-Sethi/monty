@@ -450,7 +450,7 @@ impl PyTrait for List {
         }
 
         // Drop the other value - we've extracted its contents and are done with the temporary reference
-        other.drop_with_heap(reader.heap);
+        other.drop_with_heap(reader);
         Ok(true)
     }
 

@@ -271,8 +271,8 @@ impl Dict {
             Ok(result) => result,
             Err(e) => {
                 // Drop the key and value before returning the error
-                key.drop_with_heap(reader.heap);
-                value.drop_with_heap(reader.heap);
+                key.drop_with_heap(reader);
+                value.drop_with_heap(reader);
                 return Err(e);
             }
         };
@@ -283,7 +283,7 @@ impl Dict {
             let old_entry = std::mem::replace(&mut this.get_mut(reader).entries[index], entry);
 
             // Decrement refcount for old key (we're discarding it)
-            old_entry.key.drop_with_heap(reader.heap);
+            old_entry.key.drop_with_heap(reader);
             // Transfer ownership of the old value to caller (no clone needed)
             Ok(Some(old_entry.value))
         } else {
@@ -655,7 +655,7 @@ impl PyTrait for Dict {
     ) -> RunResult<()> {
         // Drop the old value if one was replaced
         if let Some(old_value) = Self::set_via_reader(this, key, value, reader, interns)? {
-            old_value.drop_with_heap(reader.heap);
+            old_value.drop_with_heap(reader);
         }
         Ok(())
     }
