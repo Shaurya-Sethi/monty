@@ -9,7 +9,7 @@ use monty::ExcType;
 use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
     prelude::*,
-    types::{PyBytes, PyDict, PyList, PyTuple},
+    types::{PyBytes, PyDict, PyList, PyTuple, PyType},
 };
 use send_wrapper::SendWrapper;
 
@@ -19,7 +19,7 @@ use crate::{
     exceptions::{MontyError, exc_py_to_monty},
     external::{ExternalFunctionRegistry, dispatch_method_call},
     limits::{PySignalTracker, extract_limits},
-    monty_cls::CallbackStringPrint,
+    monty_cls::{CallbackStringPrint, EitherProgress},
 };
 
 /// Stateful no-replay REPL session.
@@ -74,7 +74,7 @@ impl PyMontyRepl {
     }
 
     /// Registers a dataclass type for proper isinstance() support on output.
-    fn register_dataclass(&self, cls: &Bound<'_, pyo3::types::PyType>) -> PyResult<()> {
+    fn register_dataclass(&self, cls: &Bound<'_, PyType>) -> PyResult<()> {
         self.dc_registry.insert(cls)
     }
 
@@ -167,7 +167,7 @@ impl PyMontyRepl {
         let progress = py
             .detach(|| repl.feed_start(&code_owned, inputs_owned, print_output.reborrow()))
             .map_err(|e| this.restore_repl_from_start_error(py, *e))?;
-        let either = crate::monty_cls::EitherProgress::Repl(Box::new(progress), repl_owner);
+        let either = EitherProgress::Repl(Box::new(progress), repl_owner);
         either.progress_or_complete(py, script_name, print_callback, dc_registry)
     }
 

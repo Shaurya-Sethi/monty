@@ -421,6 +421,24 @@ impl ExcType {
         .into()
     }
 
+    /// Creates a TypeError for too many arguments to a method or named function.
+    ///
+    /// Matches CPython's format for method-style calls:
+    /// `{name}() takes at most {max} argument ({actual} given)` (singular when max=1)
+    /// `{name}() takes at most {max} arguments ({actual} given)` (plural otherwise)
+    ///
+    /// Use this instead of `type_error_at_most` for methods and type constructors that
+    /// CPython formats with parentheses, e.g. `now()`, `timezone()`, `expandtabs()`.
+    #[must_use]
+    pub(crate) fn type_error_method_at_most(name: &str, max: usize, actual: usize) -> RunError {
+        let plural = if max == 1 { "" } else { "s" };
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("{name}() takes at most {max} argument{plural} ({actual} given)"),
+        )
+        .into()
+    }
+
     /// Creates a TypeError for missing positional arguments.
     ///
     /// Matches CPython's format: `{name}() missing {count} required positional argument(s): 'a' and 'b'`
@@ -541,6 +559,24 @@ impl ExcType {
         .into()
     }
 
+    /// Creates a TypeError for when a positional argument conflicts with a keyword argument
+    /// of the same name in a C-implemented type constructor.
+    ///
+    /// Matches CPython's `PyArg_ParseTupleAndKeywords` format:
+    /// `argument for function given by name ('{key}') and position ({pos})`
+    ///
+    /// The position is 1-indexed, matching CPython's convention. The `func_descriptor` is
+    /// typically `"function"` for most C types (like `datetime`), matching CPython's generic
+    /// wording for `PyArg_ParseTupleAndKeywords`.
+    #[must_use]
+    pub(crate) fn type_error_positional_keyword_conflict(func_descriptor: &str, key: &str, pos: usize) -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("argument for {func_descriptor} given by name ('{key}') and position ({pos})"),
+        )
+        .into()
+    }
+
     /// Creates a TypeError for unexpected keyword argument.
     ///
     /// Matches CPython's format: `{name}() got an unexpected keyword argument '{key}'`
@@ -549,6 +585,59 @@ impl ExcType {
         SimpleException::new_msg(
             Self::TypeError,
             format!("{name}() got an unexpected keyword argument '{key}'"),
+        )
+        .into()
+    }
+
+    /// Creates a TypeError for unexpected keyword argument in C-implemented types.
+    ///
+    /// Matches CPython's `PyArg_ParseTupleAndKeywords` format:
+    /// `this function got an unexpected keyword argument '{key}'`
+    #[must_use]
+    pub(crate) fn type_error_c_unexpected_keyword(key: &str) -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("this function got an unexpected keyword argument '{key}'"),
+        )
+        .into()
+    }
+
+    /// Creates a TypeError for too many arguments to a C-implemented type.
+    ///
+    /// Matches CPython's `PyArg_ParseTupleAndKeywords` format:
+    /// `function takes at most {max} arguments ({actual} given)`
+    #[must_use]
+    pub(crate) fn type_error_c_at_most(max: usize, actual: usize) -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("function takes at most {max} arguments ({actual} given)"),
+        )
+        .into()
+    }
+
+    /// Creates a TypeError for a missing required argument in a C-implemented type.
+    ///
+    /// Matches CPython's `PyArg_ParseTupleAndKeywords` format:
+    /// `function missing required argument '{arg_name}' (pos {pos})`
+    #[must_use]
+    pub(crate) fn type_error_c_missing_required(arg_name: &str, pos: usize) -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("function missing required argument '{arg_name}' (pos {pos})"),
+        )
+        .into()
+    }
+
+    /// Creates a TypeError for a missing required argument in a C-implemented type,
+    /// with a function name prefix.
+    ///
+    /// Matches CPython's format for types like `timezone`:
+    /// `{name}() missing required argument '{arg_name}' (pos {pos})`
+    #[must_use]
+    pub(crate) fn type_error_c_missing_required_named(name: &str, arg_name: &str, pos: usize) -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("{name}() missing required argument '{arg_name}' (pos {pos})"),
         )
         .into()
     }
@@ -582,6 +671,18 @@ impl ExcType {
     #[must_use]
     pub(crate) fn type_error_kwargs_nonstring_key() -> RunError {
         SimpleException::new_msg(Self::TypeError, "keywords must be strings").into()
+    }
+
+    /// Creates a TypeError for an invalid `tzinfo` argument.
+    ///
+    /// Matches CPython: `tzinfo argument must be None or of a tzinfo subclass, not type 'int'`
+    #[must_use]
+    pub(crate) fn type_error_tzinfo(ty: Type) -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("tzinfo argument must be None or of a tzinfo subclass, not type '{ty}'"),
+        )
+        .into()
     }
 
     /// Creates a simple TypeError with a custom message.
@@ -1270,7 +1371,7 @@ impl<'h> HeapRead<'h, SimpleException> {
 
 impl SimpleException {
     /// Returns the exception formatted as Python would repr it.
-    pub fn py_repr_fmt(&self, f: &mut impl Write) -> std::fmt::Result {
+    pub fn py_repr_fmt(&self, f: &mut impl Write) -> fmt::Result {
         let type_str: &'static str = self.exc_type.into();
         write!(f, "{type_str}(")?;
 

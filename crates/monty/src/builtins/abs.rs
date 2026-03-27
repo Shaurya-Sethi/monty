@@ -9,7 +9,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
     heap::HeapData,
-    types::{LongInt, PyTrait},
+    types::{LongInt, PyTrait, timedelta},
     value::Value,
 };
 
@@ -34,17 +34,20 @@ pub fn builtin_abs(vm: &mut VM<'_, '_>, args: ArgValues) -> RunResult<Value> {
         }
         Value::Float(f) => Ok(Value::Float(f.abs())),
         Value::Bool(b) => Ok(Value::Int(i64::from(*b))),
-        Value::Ref(id) => {
-            if let HeapData::LongInt(li) = vm.heap.get(*id) {
-                Ok(li.abs().into_value(vm.heap)?)
-            } else {
-                Err(SimpleException::new_msg(
-                    ExcType::TypeError,
-                    format!("bad operand type for abs(): '{}'", value.py_type(vm)),
-                )
-                .into())
+        Value::Ref(id) => match vm.heap.get(*id) {
+            HeapData::LongInt(li) => Ok(li.abs().into_value(vm.heap)?),
+            HeapData::TimeDelta(td) => {
+                let total = timedelta::total_microseconds(td);
+                let abs_total = total.checked_abs().unwrap_or(total);
+                let delta = timedelta::from_total_microseconds(abs_total)?;
+                Ok(Value::Ref(vm.heap.allocate(HeapData::TimeDelta(delta))?))
             }
-        }
+            _ => Err(SimpleException::new_msg(
+                ExcType::TypeError,
+                format!("bad operand type for abs(): '{}'", value.py_type(vm)),
+            )
+            .into()),
+        },
         _ => Err(SimpleException::new_msg(
             ExcType::TypeError,
             format!("bad operand type for abs(): '{}'", value.py_type(vm)),

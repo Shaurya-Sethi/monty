@@ -6,6 +6,8 @@
 //! - Task completion and failure handling
 //! - External future resolution
 
+use std::mem;
+
 use super::{AwaitResult, CallFrame, VM};
 use crate::{
     InvalidInputError, MontyObject,
@@ -170,7 +172,7 @@ impl VM<'_, '_> {
 
         if all_complete {
             // All external futures were already resolved - return results immediately
-            let results: Vec<Value> = std::mem::take(&mut gather_mut.results)
+            let results: Vec<Value> = mem::take(&mut gather_mut.results)
                 .into_iter()
                 .map(|r| r.expect("all results should be filled"))
                 .collect();
@@ -190,7 +192,7 @@ impl VM<'_, '_> {
             not(feature = "ref-count-panic"),
             expect(clippy::forget_non_drop, reason = "has Drop with ref-count-panic feature")
         )]
-        std::mem::forget(awaitable);
+        mem::forget(awaitable);
 
         // Switch to next ready task (spawned tasks) or yield for external futures
         this.switch_or_yield()
@@ -231,7 +233,7 @@ impl VM<'_, '_> {
         let locals_count = u16::try_from(namespace_values.len()).expect("coroutine namespace size exceeds u16");
 
         // Track memory for the locals
-        let size = namespace_values.len() * std::mem::size_of::<Value>();
+        let size = namespace_values.len() * mem::size_of::<Value>();
         self.heap.tracker_mut().on_allocate(size)?;
 
         // Extend the stack with the coroutine's pre-bound locals
@@ -347,7 +349,7 @@ impl VM<'_, '_> {
                 if let Some(&failed_tid) = failed_task {
                     // Get the error from the failed task
                     let task = self.scheduler.get_task_mut(failed_tid);
-                    if let TaskState::Failed(err) = std::mem::replace(&mut task.state, TaskState::Ready) {
+                    if let TaskState::Failed(err) = mem::replace(&mut task.state, TaskState::Ready) {
                         self.heap.dec_ref(gid);
 
                         // Switch to waiter so error is raised in its context
@@ -364,7 +366,7 @@ impl VM<'_, '_> {
                 // Steal results from gather using mem::take - avoids refcount dance
                 // (copy + inc_ref + dec_ref on gather drop). Since gather is being
                 // destroyed, we can take ownership of the values directly.
-                let results: Vec<Value> = std::mem::take(&mut gather.get_mut(self.heap).results)
+                let results: Vec<Value> = mem::take(&mut gather.get_mut(self.heap).results)
                     .into_iter()
                     .map(|r| r.expect("all results should be filled when gather is complete"))
                     .collect();
@@ -454,7 +456,7 @@ impl VM<'_, '_> {
                 panic!("task gather_id doesn't point to a GatherFuture")
             };
             let gather_mut = gather.get_mut(self.heap);
-            let task_ids = std::mem::take(&mut gather_mut.task_ids);
+            let task_ids = mem::take(&mut gather_mut.task_ids);
             let waiter = gather_mut.waiter;
             // Drop the HeapRead before operations that may free heap objects
             drop(gather);
@@ -479,7 +481,7 @@ impl VM<'_, '_> {
                 self.load_or_init_task(waiter_id)?;
                 // Get error back from task state to return
                 let task = self.scheduler.get_task_mut(task_id);
-                if let TaskState::Failed(err) = std::mem::replace(&mut task.state, TaskState::Ready) {
+                if let TaskState::Failed(err) = mem::replace(&mut task.state, TaskState::Ready) {
                     return Err(err);
                 }
             }
@@ -526,8 +528,8 @@ impl VM<'_, '_> {
         // Save VM state into the task
         let task = self.scheduler.get_task_mut(task_id);
         task.frames = frames;
-        task.stack = std::mem::take(&mut self.stack);
-        task.exception_stack = std::mem::take(&mut self.exception_stack);
+        task.stack = mem::take(&mut self.stack);
+        task.exception_stack = mem::take(&mut self.exception_stack);
         task.instruction_ip = self.instruction_ip;
     }
 
@@ -542,9 +544,9 @@ impl VM<'_, '_> {
     /// (balances the subtraction in `save_task_context`).
     fn load_or_init_task(&mut self, task_id: TaskId) -> Result<(), RunError> {
         let task = self.scheduler.get_task_mut(task_id);
-        let frames = std::mem::take(&mut task.frames);
-        let stack = std::mem::take(&mut task.stack);
-        let exception_stack = std::mem::take(&mut task.exception_stack);
+        let frames = mem::take(&mut task.frames);
+        let stack = mem::take(&mut task.stack);
+        let exception_stack = mem::take(&mut task.exception_stack);
         let instruction_ip = task.instruction_ip;
         let coroutine_id = task.coroutine_id;
 
@@ -634,7 +636,7 @@ impl VM<'_, '_> {
         let locals_count = u16::try_from(namespace_values.len()).expect("coroutine namespace size exceeds u16");
 
         // Track memory for the locals
-        let size = namespace_values.len() * std::mem::size_of::<Value>();
+        let size = namespace_values.len() * mem::size_of::<Value>();
         self.heap.tracker_mut().on_allocate(size)?;
 
         let stack_base = self.stack.len();
@@ -698,7 +700,7 @@ impl VM<'_, '_> {
                     // Steal results from gather using mem::take - avoids refcount dance
                     // (copy + inc_ref + dec_ref on gather drop). Since gather is being
                     // destroyed, we can take ownership of the values directly.
-                    let results: Vec<Value> = std::mem::take(&mut gather.get_mut(self.heap).results)
+                    let results: Vec<Value> = mem::take(&mut gather.get_mut(self.heap).results)
                         .into_iter()
                         .map(|r| r.expect("all results should be filled when gather is complete"))
                         .collect();
@@ -763,10 +765,10 @@ impl VM<'_, '_> {
                 panic!("gather_id doesn't point to a GatherFuture")
             };
             let gather_mut = gather.get_mut(self.heap);
-            let mut other_pending_calls = std::mem::take(&mut gather_mut.pending_calls);
+            let mut other_pending_calls = mem::take(&mut gather_mut.pending_calls);
             other_pending_calls.retain(|&cid| cid != call_id);
             let waiter = gather_mut.waiter;
-            let task_ids = std::mem::take(&mut gather_mut.task_ids);
+            let task_ids = mem::take(&mut gather_mut.task_ids);
             // Drop the HeapRead before operations that may free heap objects
             drop(gather);
 
@@ -794,7 +796,7 @@ impl VM<'_, '_> {
             let HeapReadOutput::GatherFuture(mut gather) = self.heap.read(gid) else {
                 panic!("gather_id doesn't point to a GatherFuture")
             };
-            let task_ids = std::mem::take(&mut gather.get_mut(self.heap).task_ids);
+            let task_ids = mem::take(&mut gather.get_mut(self.heap).task_ids);
             // Drop the HeapRead before cancel_task which may free heap objects
             drop(gather);
 
@@ -922,7 +924,7 @@ impl VM<'_, '_> {
         // Only replace state if it's actually Failed - otherwise we'd corrupt
         // the task's real state (e.g., BlockedOnCall) by overwriting it with Ready.
         if matches!(task.state, TaskState::Failed(_))
-            && let TaskState::Failed(error) = std::mem::replace(&mut task.state, TaskState::Ready)
+            && let TaskState::Failed(error) = mem::replace(&mut task.state, TaskState::Ready)
         {
             return Some(error);
         }

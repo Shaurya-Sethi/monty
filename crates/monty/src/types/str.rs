@@ -2,8 +2,7 @@
 ///
 /// This type provides Python string semantics. Currently supports basic
 /// operations like length and equality comparison.
-use std::{borrow::Cow, fmt};
-use std::{cmp::Ordering, fmt::Write};
+use std::{borrow::Cow, cmp::Ordering, fmt, fmt::Write, mem, ops};
 
 use ahash::AHashSet;
 use smallvec::smallvec;
@@ -46,7 +45,7 @@ impl Str {
     /// - `str()` with no args returns an empty string
     /// - `str(x)` converts x to its string representation using `py_str`
     pub fn init(vm: &mut VM<'_, '_>, args: ArgValues) -> RunResult<Value> {
-        let value = args.get_zero_one_arg("str", vm.heap)?;
+        let value = args.get_zero_one_named_arg("str", StaticStrings::Object, vm.heap, vm.interns)?;
         match value {
             None => Ok(Value::InternString(StaticStrings::EmptyString.into())),
             Some(v) => {
@@ -60,7 +59,7 @@ impl Str {
     /// Handles slice-based indexing for strings.
     ///
     /// Returns a new string containing the selected characters (Unicode-aware).
-    fn getitem_slice(&self, slice: &crate::types::Slice, heap: &Heap) -> RunResult<Value> {
+    fn getitem_slice(&self, slice: &super::Slice, heap: &Heap) -> RunResult<Value> {
         let char_count = self.0.chars().count();
         let (start, stop, step) = slice
             .indices(char_count)
@@ -194,7 +193,7 @@ pub(crate) fn get_str_slice(s: &str, start: usize, stop: usize, step: i64) -> St
     result
 }
 
-impl std::ops::Deref for Str {
+impl ops::Deref for Str {
     type Target = str;
 
     fn deref(&self) -> &Self::Target {
@@ -249,7 +248,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
         Ok(self.get(vm.heap).0.clone().into_string().into())
     }
 
-    fn py_add(&self, other: &Self, vm: &mut VM<'h, '_>) -> Result<Option<Value>, crate::resource::ResourceError> {
+    fn py_add(&self, other: &Self, vm: &mut VM<'h, '_>) -> Result<Option<Value>, ResourceError> {
         let self_str = self.get(vm.heap).0.clone();
         let other_str = other.get(vm.heap).0.clone();
         let result = format!("{self_str}{other_str}");
@@ -277,7 +276,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
 
 impl HeapItem for Str {
     fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>() + self.0.len()
+        mem::size_of::<Self>() + self.0.len()
     }
 
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
@@ -1309,7 +1308,7 @@ fn str_split<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, '_>) ->
         list_items.push(allocate_string(part.to_owned(), vm.heap)?);
     }
 
-    let list = crate::types::List::new(list_items);
+    let list = super::List::new(list_items);
     let heap_id = vm.heap.allocate(HeapData::List(list))?;
     Ok(Value::Ref(heap_id))
 }
@@ -1357,7 +1356,7 @@ fn str_rsplit<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, '_>) -
         list_items.push(allocate_string(part.to_owned(), vm.heap)?);
     }
 
-    let list = crate::types::List::new(list_items);
+    let list = super::List::new(list_items);
     let heap_id = vm.heap.allocate(HeapData::List(list))?;
     Ok(Value::Ref(heap_id))
 }
@@ -1542,7 +1541,7 @@ fn str_splitlines<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, '_
         start = end;
     }
 
-    let list = crate::types::List::new(lines);
+    let list = super::List::new(lines);
     let heap_id = vm.heap.allocate(HeapData::List(list))?;
     Ok(Value::Ref(heap_id))
 }
@@ -1551,52 +1550,14 @@ fn str_splitlines<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, '_
 ///
 /// Supports both positional and keyword arguments for keepends.
 fn parse_splitlines_args(args: ArgValues, vm: &mut VM<'_, '_>) -> RunResult<bool> {
-    let (pos, kwargs) = args.into_parts();
-    let kwargs_iter = kwargs.into_iter();
-    defer_drop_mut!(kwargs_iter, vm);
-
-    let mut pos_iter = pos;
-    let keepends_value = pos_iter.next();
-    defer_drop_mut!(keepends_value, vm);
-
-    // Check no extra positional arguments
-    if pos_iter.len() != 0 {
-        return Err(ExcType::type_error_at_most("str.splitlines", 1, 2));
-    }
-
-    // Extract positional keepends (default false)
-    let mut has_pos_keepends = keepends_value.is_some();
-    let mut keepends = if let Some(v) = keepends_value.as_ref() {
-        value_is_truthy(v)
+    let val = args.get_zero_one_named_arg("str.splitlines", StaticStrings::Keepends, vm.heap, vm.interns)?;
+    let keepends = if let Some(v) = val {
+        let result = value_is_truthy(&v);
+        v.drop_with_heap(vm.heap);
+        result
     } else {
         false
     };
-
-    // Process kwargs
-    for (key, value) in kwargs_iter {
-        defer_drop!(key, vm);
-        defer_drop!(value, vm);
-
-        let Some(keyword_name) = key.as_either_str(vm.heap) else {
-            return Err(ExcType::type_error("keywords must be strings"));
-        };
-
-        let key_str = keyword_name.as_str(vm.interns);
-        if key_str == "keepends" {
-            if has_pos_keepends {
-                return Err(ExcType::type_error(
-                    "str.splitlines() got multiple values for argument 'keepends'",
-                ));
-            }
-            keepends = value_is_truthy(value);
-            has_pos_keepends = true;
-        } else {
-            return Err(ExcType::type_error(format!(
-                "'{key_str}' is an invalid keyword argument for str.splitlines()"
-            )));
-        }
-    }
-
     Ok(keepends)
 }
 
@@ -1633,7 +1594,7 @@ fn str_partition<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, '_>
     let sep_val = allocate_string(sep_found.to_owned(), vm.heap)?;
     let after_val = allocate_string(after.to_owned(), vm.heap)?;
 
-    Ok(crate::types::allocate_tuple(
+    Ok(super::allocate_tuple(
         smallvec![before_val, sep_val, after_val],
         vm.heap,
     )?)
@@ -1662,7 +1623,7 @@ fn str_rpartition<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, '_
     let sep_val = allocate_string(sep_found.to_owned(), vm.heap)?;
     let after_val = allocate_string(after.to_owned(), vm.heap)?;
 
-    Ok(crate::types::allocate_tuple(
+    Ok(super::allocate_tuple(
         smallvec![before_val, sep_val, after_val],
         vm.heap,
     )?)
@@ -1922,8 +1883,7 @@ fn str_zfill<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, '_>) ->
 /// Returns a copy of the string where all tab characters are replaced by one or
 /// more spaces, depending on the current column and the given tab size.
 fn str_expandtabs<'h>(s: &HeapRead<'h, str>, args: ArgValues, vm: &mut VM<'h, '_>) -> RunResult<Value> {
-    // Check args
-    let tabsize_val = args.get_zero_one_arg("str.expandtabs", vm.heap)?;
+    let tabsize_val = args.get_zero_one_named_arg("str.expandtabs", StaticStrings::Tabsize, vm.heap, vm.interns)?;
 
     let tabsize = match tabsize_val {
         None => 8,

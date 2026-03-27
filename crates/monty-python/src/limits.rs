@@ -144,7 +144,7 @@ impl<T: ResourceTracker> ResourceTracker for PySignalTracker<T> {
         self.inner.on_grow(additional_bytes)
     }
 
-    fn set_max_duration(&mut self, duration: std::time::Duration) {
+    fn set_max_duration(&mut self, duration: Duration) {
         self.inner.set_max_duration(duration);
     }
 

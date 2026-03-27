@@ -43,14 +43,14 @@
 //! console.log('Final result:', progress.output);
 //! ```
 
-use std::borrow::Cow;
+use std::{borrow::Cow, mem, ptr, result};
 
 use monty::{
     ExcType, ExtFunctionResult, FunctionCall, LimitedTracker, MontyException, MontyObject, MontyRepl as CoreMontyRepl,
     MontyRun, NameLookup, NameLookupResult, NoLimitTracker, OsCall, PrintWriter, PrintWriterCallback, RunProgress,
 };
 use monty_type_checking::{type_check, SourceFile};
-use napi::bindgen_prelude::*;
+use napi::{bindgen_prelude::*, sys::Status};
 use napi_derive::napi;
 
 use crate::{
@@ -741,12 +741,12 @@ impl MontySnapshot {
         };
 
         // Take the snapshot, replacing with Done
-        let snapshot = std::mem::replace(&mut self.snapshot, SnapshotState::Done);
+        let snapshot = mem::replace(&mut self.snapshot, SnapshotState::Done);
 
         // Take the print callback
         // This is necessary to move out of `&mut self` to please the borrow checker.
         // Unless the entire snapshot generator is refactored we have to do this.
-        let print_callback = std::mem::take(&mut self.print_callback);
+        let print_callback = mem::take(&mut self.print_callback);
 
         // Build print writer from the callback ref
         let mut print_cb;
@@ -953,10 +953,10 @@ impl MontyNameLookup {
         };
 
         // Take the snapshot, replacing with Done
-        let snapshot = std::mem::replace(&mut self.snapshot, LookupState::Done);
+        let snapshot = mem::replace(&mut self.snapshot, LookupState::Done);
 
         // Take the print callback
-        let print_callback = std::mem::take(&mut self.print_callback);
+        let print_callback = mem::take(&mut self.print_callback);
 
         // Build print writer from the callback ref
         let mut print_cb;
@@ -1061,14 +1061,14 @@ impl<'env> CallbackStringPrint<'env> {
 }
 
 impl PrintWriterCallback for CallbackStringPrint<'_> {
-    fn stdout_write(&mut self, output: Cow<'_, str>) -> std::result::Result<(), MontyException> {
+    fn stdout_write(&mut self, output: Cow<'_, str>) -> result::Result<(), MontyException> {
         self.0
             .call(("stdout", output.as_ref().to_owned()).into())
             .map_err(exc_js_to_monty)?;
         Ok(())
     }
 
-    fn stdout_push(&mut self, end: char) -> std::result::Result<(), MontyException> {
+    fn stdout_push(&mut self, end: char) -> result::Result<(), MontyException> {
         self.0
             .call(("stdout", end.to_string()).into())
             .map_err(exc_js_to_monty)?;
@@ -1252,14 +1252,14 @@ fn call_external_function(
     }
 
     // Get undefined for the 'this' argument
-    let mut undefined_raw = std::ptr::null_mut();
+    let mut undefined_raw = ptr::null_mut();
     // SAFETY: [DH] - all arguments are valid and result is valid on success
     unsafe {
         sys::napi_get_undefined(env.raw(), &raw mut undefined_raw);
     }
 
     // Call the function using raw napi
-    let mut result_raw = std::ptr::null_mut();
+    let mut result_raw = ptr::null_mut();
     // SAFETY: [DH] - all arguments are valid and result is valid on success
     let status = unsafe {
         sys::napi_call_function(
@@ -1272,18 +1272,18 @@ fn call_external_function(
         )
     };
 
-    if status != sys::Status::napi_ok {
+    if status != Status::napi_ok {
         // An error occurred - get the pending exception
         let mut is_exception = false;
         // SAFETY: [DH] - all arguments are valid
         unsafe { sys::napi_is_exception_pending(env.raw(), &raw mut is_exception) };
 
         if is_exception {
-            let mut exception_raw = std::ptr::null_mut();
+            let mut exception_raw = ptr::null_mut();
             // SAFETY: [DH] - all arguments are valid and exception_raw is valid on success
             let status = unsafe { sys::napi_get_and_clear_last_exception(env.raw(), &raw mut exception_raw) };
 
-            if status != sys::Status::napi_ok {
+            if status != Status::napi_ok {
                 // Failed to get the exception - return a generic error
                 let exc = MontyException::new(
                     ExcType::RuntimeError,
@@ -1311,9 +1311,9 @@ fn call_external_function(
 /// Extracts exception info from a JS exception object.
 fn extract_js_exception(exception_obj: Object<'_>) -> MontyException {
     // Try to get the 'name' property (e.g., "ValueError")
-    let name: std::result::Result<String, _> = exception_obj.get_named_property("name");
+    let name: result::Result<String, _> = exception_obj.get_named_property("name");
     // Try to get the 'message' property
-    let message: std::result::Result<String, _> = exception_obj.get_named_property("message");
+    let message: result::Result<String, _> = exception_obj.get_named_property("message");
 
     let exc_type = name
         .ok()

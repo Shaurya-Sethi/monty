@@ -4,6 +4,8 @@
 //! functions for executing function calls. The main entry points are the `exec_*`
 //! methods which are called from the VM's main dispatch loop.
 
+use std::mem;
+
 use super::{CallFrame, VM};
 use crate::{
     args::{ArgValues, KwargsValues},
@@ -16,7 +18,7 @@ use crate::{
     heap_data::CellValue,
     intern::{FunctionId, StringId},
     os::OsFunction,
-    types::{Dict, PyTrait, Type, bytes::call_bytes_method, str::call_str_method, r#type::call_type_method},
+    types::{Dict, PyTrait, Type, bytes::call_bytes_method, str::call_str_method},
     value::{EitherStr, Value},
 };
 
@@ -282,7 +284,7 @@ impl VM<'_, '_> {
             }
             Value::Builtin(Builtins::Type(t)) => {
                 // Handle classmethods on type objects like dict.fromkeys()
-                call_type_method(t, name_id, args, this).map(CallResult::Value)
+                t.call_class_method(name_id, args, this).map(Into::into)
             }
             _ => {
                 // Non-heap values without method support
@@ -701,7 +703,7 @@ impl VM<'_, '_> {
         let locals_count = u16::try_from(namespace_size).expect("function namespace size exceeds u16");
 
         // Track memory for this frame's locals
-        let size = namespace_size * std::mem::size_of::<Value>();
+        let size = namespace_size * mem::size_of::<Value>();
         self.heap.tracker_mut().on_allocate(size)?;
 
         // 1. Create namespace for the frame in a temporary vec, will extend to stack later

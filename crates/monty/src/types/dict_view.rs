@@ -1,4 +1,4 @@
-use std::fmt::Write;
+use std::{fmt::Write, mem};
 
 use ahash::AHashSet;
 use smallvec::smallvec;
@@ -6,13 +6,13 @@ use smallvec::smallvec;
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
-    defer_drop,
+    defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, RunResult},
     heap::{Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::StaticStrings,
     resource::ResourceError,
     types::{Dict, FrozenSet, MontyIter, PyTrait, Set, Type, allocate_tuple},
-    value::Value,
+    value::{EitherStr, Value},
 };
 
 /// Shared accessors for heap-backed dictionary view objects.
@@ -149,7 +149,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictKeysView> {
         Some(self.get(vm.heap).dict(vm.heap).len())
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_>) -> Result<bool, crate::resource::ResourceError> {
+    fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_>) -> Result<bool, ResourceError> {
         self.get(vm.heap).eq_view(*other.get(vm.heap), vm)
     }
 
@@ -163,7 +163,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictKeysView> {
         &mut self,
         _self_id: HeapId,
         vm: &mut VM<'h, '_>,
-        attr: &crate::value::EitherStr,
+        attr: &EitherStr,
         args: ArgValues,
     ) -> RunResult<CallResult> {
         let view = *self.get(vm.heap);
@@ -180,7 +180,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictKeysView> {
 
 impl HeapItem for DictKeysView {
     fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>()
+        mem::size_of::<Self>()
     }
 
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
@@ -300,7 +300,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictItemsView> {
         Some(self.get(vm.heap).dict(vm.heap).len())
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_>) -> Result<bool, crate::resource::ResourceError> {
+    fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_>) -> Result<bool, ResourceError> {
         self.get(vm.heap).eq_view(*other.get(vm.heap), vm)
     }
 
@@ -314,7 +314,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictItemsView> {
         &mut self,
         _self_id: HeapId,
         vm: &mut VM<'h, '_>,
-        attr: &crate::value::EitherStr,
+        attr: &EitherStr,
         args: ArgValues,
     ) -> RunResult<CallResult> {
         let view = *self.get(vm.heap);
@@ -331,7 +331,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictItemsView> {
 
 impl HeapItem for DictItemsView {
     fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>()
+        mem::size_of::<Self>()
     }
 
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
@@ -378,7 +378,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictValuesView> {
         Some(self.get(vm.heap).dict(vm.heap).len())
     }
 
-    fn py_eq(&self, _other: &Self, _vm: &mut VM<'h, '_>) -> Result<bool, crate::resource::ResourceError> {
+    fn py_eq(&self, _other: &Self, _vm: &mut VM<'h, '_>) -> Result<bool, ResourceError> {
         Ok(false)
     }
 
@@ -391,7 +391,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictValuesView> {
 
 impl HeapItem for DictValuesView {
     fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>()
+        mem::size_of::<Self>()
     }
 
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
@@ -545,8 +545,8 @@ pub(crate) fn collect_iterable_to_set(value: Value, vm: &mut VM<'_, '_>) -> Resu
 
     let (value, vm) = value_guard.into_parts();
     let iter = MontyIter::new(value, vm)?;
-    crate::defer_drop_mut!(iter, vm);
-    let mut set_guard = crate::heap::HeapGuard::new(Set::with_capacity(iter.size_hint(vm.heap)), vm);
+    defer_drop_mut!(iter, vm);
+    let mut set_guard = HeapGuard::new(Set::with_capacity(iter.size_hint(vm.heap)), vm);
     let (set, vm) = set_guard.as_parts_mut();
     while let Some(item) = iter.for_next(vm)? {
         set.add(item, vm)?;

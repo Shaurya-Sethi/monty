@@ -4,7 +4,7 @@ use std::{
     collections::hash_map::DefaultHasher,
     fmt::{self, Write},
     hash::{Hash, Hasher},
-    mem::discriminant,
+    mem::{self, discriminant},
     str::FromStr,
 };
 
@@ -23,11 +23,12 @@ use crate::{
     modules::ModuleFunctions,
     resource::{ResourceError, check_div_size, check_lshift_size, check_pow_size, check_repeat_size},
     types::{
-        LongInt, Property, PyTrait, Str, Type,
+        Bytes, LongInt, Property, PyTrait, Str, Type,
         bytes::{bytes_repr_fmt, get_byte_at_index, get_bytes_slice},
         long_int::check_bits_str_digits_limit,
         path,
         str::{allocate_char, get_char_at_index, get_str_slice, string_repr_fmt},
+        timedelta,
     },
 };
 
@@ -104,7 +105,7 @@ pub(crate) enum Value {
 ///
 /// Used for memory tracking when containers grow (e.g., `list.append`, `list.extend`).
 /// Must match the per-element unit used by `py_estimate_size` implementations.
-pub(crate) const VALUE_SIZE: usize = std::mem::size_of::<Value>();
+pub(crate) const VALUE_SIZE: usize = mem::size_of::<Value>();
 
 /// Drop implementation that panics if a `Ref` variant is dropped without calling `drop_with_heap`.
 /// This helps catch reference counting bugs during development/testing.
@@ -290,6 +291,11 @@ impl PyTrait<'_> for Value {
                     Ok(a.get(vm.heap).as_str().partial_cmp(b.get(vm.heap).as_str()))
                 }
                 (HeapReadOutput::Tuple(a), HeapReadOutput::Tuple(b)) => a.py_cmp(&b, vm),
+                (HeapReadOutput::Date(a), HeapReadOutput::Date(b)) => Ok(a.get(vm.heap).partial_cmp(b.get(vm.heap))),
+                (HeapReadOutput::DateTime(a), HeapReadOutput::DateTime(b)) => a.py_cmp(&b, vm),
+                (HeapReadOutput::TimeDelta(a), HeapReadOutput::TimeDelta(b)) => {
+                    Ok(a.get(vm.heap).partial_cmp(b.get(vm.heap)))
+                }
                 _ => Ok(None),
             },
             // Interned string comparisons
@@ -402,7 +408,7 @@ impl PyTrait<'_> for Value {
         }
     }
 
-    fn py_add(&self, other: &Self, vm: &mut VM<'_, '_>) -> Result<Option<Value>, crate::resource::ResourceError> {
+    fn py_add(&self, other: &Self, vm: &mut VM<'_, '_>) -> Result<Option<Value>, ResourceError> {
         let interns = vm.interns;
         match (self, other) {
             // Int + Int with overflow detection
@@ -489,7 +495,7 @@ impl PyTrait<'_> for Value {
         }
     }
 
-    fn py_sub(&self, other: &Self, vm: &mut VM<'_, '_>) -> Result<Option<Self>, crate::resource::ResourceError> {
+    fn py_sub(&self, other: &Self, vm: &mut VM<'_, '_>) -> Result<Option<Self>, ResourceError> {
         match (self, other) {
             // Int - Int with overflow detection
             (Self::Int(a), Self::Int(b)) => {
@@ -626,12 +632,7 @@ impl PyTrait<'_> for Value {
         }
     }
 
-    fn py_iadd(
-        &mut self,
-        other: &Self,
-        vm: &mut VM<'_, '_>,
-        _self_id: Option<HeapId>,
-    ) -> Result<bool, crate::resource::ResourceError> {
+    fn py_iadd(&mut self, other: &Self, vm: &mut VM<'_, '_>, _self_id: Option<HeapId>) -> Result<bool, ResourceError> {
         let interns = vm.interns;
         match (&self, other) {
             (Self::Int(v1), Self::Int(v2)) => {
@@ -810,9 +811,9 @@ impl PyTrait<'_> for Value {
                     Ok(None)
                 }
             }
-            // LongInt / Int
-            (Self::Ref(id), Self::Int(b)) => {
-                if let HeapData::LongInt(li) = vm.heap.get(*id) {
+            // LongInt / Int or TimeDelta / Int
+            (Self::Ref(id), Self::Int(b)) => match vm.heap.get(*id) {
+                HeapData::LongInt(li) => {
                     if *b == 0 {
                         Err(ExcType::zero_division().into())
                     } else {
@@ -821,10 +822,19 @@ impl PyTrait<'_> for Value {
                         let b_f64 = *b as f64;
                         Ok(Some(Self::Float(a_f64 / b_f64)))
                     }
-                } else {
-                    Ok(None)
                 }
-            }
+                HeapData::TimeDelta(td) => {
+                    if *b == 0 {
+                        Err(ExcType::zero_division().into())
+                    } else {
+                        let total = timedelta::total_microseconds(td);
+                        let result = timedelta::div_microseconds_round_ties_even(total, i128::from(*b));
+                        let delta = timedelta::from_total_microseconds(result)?;
+                        Ok(Some(Self::Ref(vm.heap.allocate(HeapData::TimeDelta(delta))?)))
+                    }
+                }
+                _ => Ok(None),
+            },
             // LongInt / LongInt
             (Self::Ref(id1), Self::Ref(id2)) => match (vm.heap.get(*id1), vm.heap.get(*id2)) {
                 (HeapData::LongInt(li1), HeapData::LongInt(li2)) => {
@@ -961,19 +971,28 @@ impl PyTrait<'_> for Value {
                     Ok(None)
                 }
             }
-            // LongInt // Int
-            (Self::Ref(id), Self::Int(b)) => {
-                if let HeapData::LongInt(li) = vm.heap.get(*id) {
+            // LongInt // Int or TimeDelta // Int
+            (Self::Ref(id), Self::Int(b)) => match vm.heap.get(*id) {
+                HeapData::LongInt(li) => {
                     if *b == 0 {
                         Err(ExcType::zero_division().into())
                     } else {
                         let bi = li.inner().div_floor(&BigInt::from(*b));
                         Ok(Some(LongInt::new(bi).into_value(vm.heap)?))
                     }
-                } else {
-                    Ok(None)
                 }
-            }
+                HeapData::TimeDelta(td) => {
+                    if *b == 0 {
+                        Err(ExcType::zero_division().into())
+                    } else {
+                        let total = timedelta::total_microseconds(td);
+                        let result = total.div_euclid(i128::from(*b));
+                        let delta = timedelta::from_total_microseconds(result)?;
+                        Ok(Some(Self::Ref(vm.heap.allocate(HeapData::TimeDelta(delta))?)))
+                    }
+                }
+                _ => Ok(None),
+            },
             // LongInt // LongInt
             (Self::Ref(id1), Self::Ref(id2)) => match (vm.heap.get(*id1), vm.heap.get(*id2)) {
                 (HeapData::LongInt(li1), HeapData::LongInt(li2)) => {
@@ -1301,9 +1320,7 @@ impl PyTrait<'_> for Value {
                         .indices(bytes.len())
                         .map_err(|()| ExcType::value_error_slice_step_zero())?;
                     let result_bytes = get_bytes_slice(bytes, start, stop, step);
-                    let heap_id = vm
-                        .heap
-                        .allocate(HeapData::Bytes(crate::types::Bytes::new(result_bytes)))?;
+                    let heap_id = vm.heap.allocate(HeapData::Bytes(Bytes::new(result_bytes)))?;
                     return Ok(Self::Ref(heap_id));
                 }
 
@@ -1334,6 +1351,32 @@ impl PyTrait<'_> for Value {
 }
 
 impl Value {
+    /// Returns the Python `Type` for immediate (non-heap) values without VM access.
+    ///
+    /// For `Value::Ref` variants this cannot determine the concrete type (that requires
+    /// reading from the heap), so it falls back to `Type::NoneType` as a sentinel.
+    /// Callers handling `Ref` should use `HeapData::py_type()` on the resolved data instead.
+    #[must_use]
+    pub(crate) fn py_type_shallow(&self) -> Type {
+        match self {
+            Self::Undefined | Self::None => Type::NoneType,
+            Self::Ellipsis => Type::Ellipsis,
+            Self::Bool(_) => Type::Bool,
+            Self::Int(_) | Self::InternLongInt(_) => Type::Int,
+            Self::Float(_) => Type::Float,
+            Self::InternString(_) => Type::Str,
+            Self::InternBytes(_) => Type::Bytes,
+            Self::Builtin(_) => Type::BuiltinFunction,
+            Self::ModuleFunction(_) | Self::DefFunction(_) | Self::ExtFunction(_) => Type::Function,
+            Self::Marker(_) => Type::SpecialForm,
+            Self::Property(_) => Type::Property,
+            Self::ExternalFuture(_) => Type::Coroutine,
+            Self::Ref(_) => Type::NoneType, // callers should resolve Ref via HeapData::py_type()
+            #[cfg(feature = "ref-count-panic")]
+            Self::Dereferenced => Type::NoneType,
+        }
+    }
+
     /// Returns a stable, unique identifier for this value.
     ///
     /// Should match Python's `id()` function conceptually.
@@ -1647,6 +1690,9 @@ impl Value {
                     let str_id = vm.heap.allocate(HeapData::Str(Str::from(name_str)))?;
                     return Ok(CallResult::Value(Self::Ref(str_id)));
                 }
+                if *t == Type::TimeZone && attr.as_str(vm.interns) == "utc" {
+                    return Ok(CallResult::Value(vm.heap.get_timezone_utc()?));
+                }
             }
             _ => {}
         }
@@ -1862,10 +1908,10 @@ impl Value {
     /// are left unchanged since they don't trigger the Drop panic.
     #[cfg(feature = "ref-count-panic")]
     pub fn drop_with_heap(mut self, heap: &mut impl ContainsHeap) {
-        let old = std::mem::replace(&mut self, Self::Dereferenced);
+        let old = mem::replace(&mut self, Self::Dereferenced);
         if let Self::Ref(id) = &old {
             heap.heap_mut().dec_ref(*id);
-            std::mem::forget(old);
+            mem::forget(old);
         }
     }
 
@@ -1902,8 +1948,8 @@ impl Value {
     /// This should be called from `py_dec_ref_ids` methods only
     #[cfg(feature = "ref-count-panic")]
     pub fn dec_ref_forget(&mut self) {
-        let old = std::mem::replace(self, Self::Dereferenced);
-        std::mem::forget(old);
+        let old = mem::replace(self, Self::Dereferenced);
+        mem::forget(old);
     }
 
     /// Pushes any contained `HeapId` onto the stack for reference counting.

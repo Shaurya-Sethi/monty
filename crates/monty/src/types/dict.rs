@@ -2,6 +2,7 @@ use std::{
     collections::hash_map::DefaultHasher,
     fmt::Write,
     hash::{Hash, Hasher},
+    mem, slice, vec,
 };
 
 use ahash::AHashSet;
@@ -217,7 +218,7 @@ impl<'h> HeapRead<'h, Dict> {
         let entry = DictEntry { key, value, hash };
         if let Some(index) = opt_index {
             // Key exists, replace in place to preserve insertion order
-            let old_entry = std::mem::replace(&mut self.get_mut(vm.heap).entries[index], entry);
+            let old_entry = mem::replace(&mut self.get_mut(vm.heap).entries[index], entry);
 
             // Decrement refcount for old key (we're discarding it)
             old_entry.key.drop_with_heap(vm);
@@ -467,7 +468,7 @@ impl<'h> HeapRead<'h, Dict> {
 }
 
 /// Iterator over borrowed (key, value) pairs in a dict.
-pub(crate) struct DictIter<'a>(std::slice::Iter<'a, DictEntry>);
+pub(crate) struct DictIter<'a>(slice::Iter<'a, DictEntry>);
 
 impl<'a> Iterator for DictIter<'a> {
     type Item = (&'a Value, &'a Value);
@@ -485,7 +486,7 @@ impl<'a> IntoIterator for &'a Dict {
 }
 
 /// Iterator over owned (key, value) pairs from a consumed dict.
-pub(crate) struct DictIntoIter(std::vec::IntoIter<DictEntry>);
+pub(crate) struct DictIntoIter(vec::IntoIter<DictEntry>);
 
 impl Iterator for DictIntoIter {
     type Item = (Value, Value);
@@ -695,7 +696,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
 impl HeapItem for Dict {
     fn py_estimate_size(&self) -> usize {
         // Dict size: struct overhead + entries (2 Values per entry for key+value)
-        std::mem::size_of::<Self>() + self.len() * 2 * VALUE_SIZE
+        mem::size_of::<Self>() + self.len() * 2 * VALUE_SIZE
     }
 
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
@@ -736,7 +737,7 @@ impl DropWithHeap for DictEntry {
 /// Removes all items from the dict.
 fn dict_clear<'h>(dict: &mut HeapRead<'h, Dict>, vm: &mut VM<'h, '_>) {
     dict.get_mut(vm.heap).indices.clear();
-    std::mem::take(&mut dict.get_mut(vm.heap).entries).drop_with_heap(vm.heap);
+    mem::take(&mut dict.get_mut(vm.heap).entries).drop_with_heap(vm.heap);
     // Note: contains_refs stays true even if all refs removed, per conservative GC strategy
 }
 

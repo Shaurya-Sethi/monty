@@ -65,8 +65,7 @@
 /// - `expandtabs(tabsize=8)` - Tab expansion
 /// - `translate(table[, delete])` - Character translation
 /// - `maketrans(frm, to)` - Create translation table (staticmethod)
-use std::cmp::Ordering;
-use std::fmt::Write;
+use std::{cmp::Ordering, fmt, fmt::Write, mem, ops, str};
 
 use ahash::AHashSet;
 use smallvec::smallvec;
@@ -187,7 +186,7 @@ impl Bytes {
     ///
     /// Note: Full Python semantics for bytes() are more complex (encoding, errors params).
     pub fn init(vm: &mut VM<'_, '_>, args: ArgValues) -> RunResult<Value> {
-        let value = args.get_zero_one_arg("bytes", vm.heap)?;
+        let value = args.get_zero_one_named_arg("bytes", StaticStrings::Source, vm.heap, vm.interns)?;
         defer_drop!(value, vm);
         let new_data = match value {
             None => Vec::new(),
@@ -236,7 +235,7 @@ impl From<Bytes> for Vec<u8> {
     }
 }
 
-impl std::ops::Deref for Bytes {
+impl ops::Deref for Bytes {
     type Target = Vec<u8>;
 
     fn deref(&self) -> &Self::Target {
@@ -313,7 +312,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Bytes> {
 
 impl HeapItem for Bytes {
     fn py_estimate_size(&self) -> usize {
-        std::mem::size_of::<Self>() + self.0.len()
+        mem::size_of::<Self>() + self.0.len()
     }
 
     fn py_dec_ref_ids(&mut self, _stack: &mut Vec<HeapId>) {
@@ -449,7 +448,7 @@ fn call_bytes_method_impl<'h>(
 /// - Uses single quotes by default
 /// - Switches to double quotes if bytes contain `'` but not `"`
 /// - Escapes: `\\`, `\t`, `\n`, `\r`, `\xNN` for non-printable bytes
-pub fn bytes_repr_fmt(bytes: &[u8], f: &mut impl Write) -> std::fmt::Result {
+pub fn bytes_repr_fmt(bytes: &[u8], f: &mut impl Write) -> fmt::Result {
     // Determine quote character: use double quotes if single quote present but not double
     let has_single = bytes.contains(&b'\'');
     let has_double = bytes.contains(&b'"');
@@ -508,7 +507,7 @@ fn bytes_decode<'h>(bytes: &HeapRead<'h, [u8]>, args: ArgValues, vm: &mut VM<'h,
     }
 
     // Decode as UTF-8
-    match std::str::from_utf8(bytes.get(vm.heap)) {
+    match str::from_utf8(bytes.get(vm.heap)) {
         Ok(s) => {
             let heap_id = vm.heap.allocate(HeapData::Str(Str::from(s.to_owned())))?;
             Ok(Value::Ref(heap_id))
@@ -1534,50 +1533,14 @@ fn bytes_splitlines<'h>(bytes: &HeapRead<'h, [u8]>, args: ArgValues, vm: &mut VM
 
 /// Parses arguments for bytes.splitlines method.
 fn parse_bytes_splitlines_args(args: ArgValues, vm: &mut VM<'_, '_>) -> RunResult<bool> {
-    let (pos_iter, kwargs) = args.into_parts();
-    defer_drop_mut!(pos_iter, vm);
-    let kwargs = kwargs.into_iter();
-    defer_drop_mut!(kwargs, vm);
-
-    let keepends_value = pos_iter.next();
-    defer_drop_mut!(keepends_value, vm);
-
-    // Check no extra positional arguments
-    if pos_iter.len() != 0 {
-        return Err(ExcType::type_error_at_most("bytes.splitlines", 1, 2));
-    }
-
-    // Process kwargs
-    for (key, value) in kwargs {
-        defer_drop!(key, vm);
-        let mut value_guard = HeapGuard::new(value, vm);
-
-        let Some(keyword_name) = key.as_either_str(value_guard.heap().heap) else {
-            return Err(ExcType::type_error("keywords must be strings"));
-        };
-
-        let key_str = keyword_name.as_str(value_guard.heap().interns);
-        if key_str == "keepends" {
-            if let Some(previous_value) = keepends_value.replace(value_guard.into_inner()) {
-                previous_value.drop_with_heap(vm);
-                return Err(ExcType::type_error(
-                    "bytes.splitlines() got multiple values for argument 'keepends'",
-                ));
-            }
-        } else {
-            return Err(ExcType::type_error(format!(
-                "'{key_str}' is an invalid keyword argument for bytes.splitlines()"
-            )));
-        }
-    }
-
-    // Extract keepends (default false)
-    let keepends = if let Some(v) = keepends_value {
-        v.py_bool(vm)
+    let val = args.get_zero_one_named_arg("bytes.splitlines", StaticStrings::Keepends, vm.heap, vm.interns)?;
+    let keepends = if let Some(v) = val {
+        let result = v.py_bool(vm);
+        v.drop_with_heap(vm.heap);
+        result
     } else {
         false
     };
-
     Ok(keepends)
 }
 
@@ -1603,7 +1566,7 @@ fn bytes_partition<'h>(bytes: &HeapRead<'h, [u8]>, args: ArgValues, vm: &mut VM<
     let sep_val = allocate_bytes(sep_found, vm.heap)?;
     let after_val = allocate_bytes(after, vm.heap)?;
 
-    Ok(crate::types::allocate_tuple(
+    Ok(super::allocate_tuple(
         smallvec![before_val, sep_val, after_val],
         vm.heap,
     )?)
@@ -1631,7 +1594,7 @@ fn bytes_rpartition<'h>(bytes: &HeapRead<'h, [u8]>, args: ArgValues, vm: &mut VM
     let sep_val = allocate_bytes(sep_found, vm.heap)?;
     let after_val = allocate_bytes(after, vm.heap)?;
 
-    Ok(crate::types::allocate_tuple(
+    Ok(super::allocate_tuple(
         smallvec![before_val, sep_val, after_val],
         vm.heap,
     )?)
@@ -2066,7 +2029,7 @@ fn bytes_hex<'h>(bytes: &HeapRead<'h, [u8]>, args: ArgValues, vm: &mut VM<'h, '_
         hex_chars.iter().collect()
     };
 
-    crate::types::str::allocate_string(result, vm.heap)
+    super::str::allocate_string(result, vm.heap)
 }
 
 /// Parses arguments for bytes.hex method.

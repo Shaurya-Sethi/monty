@@ -1,5 +1,7 @@
 //! Comparison operation helpers for the VM.
 
+use std::cmp::Ordering;
+
 use super::VM;
 use crate::{
     defer_drop,
@@ -40,7 +42,7 @@ impl VM<'_, '_> {
     /// Ordering comparison with a predicate.
     pub(super) fn compare_ord<F>(&mut self, check: F) -> Result<(), RunError>
     where
-        F: FnOnce(std::cmp::Ordering) -> bool,
+        F: FnOnce(Ordering) -> bool,
     {
         let this = self;
 
