@@ -50,7 +50,7 @@ impl MontyIter {
     ///   already an iterator, returns the same object.
     /// - `iter(callable, sentinel)` - Not yet supported.
     pub fn init(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-        let (iterable, sentinel) = args.get_one_two_args("iter", vm.heap)?;
+        let (iterable, sentinel) = args.get_one_two_args("iter", &mut vm.heap)?;
 
         if let Some(s) = sentinel {
             // Two-argument form: iter(callable, sentinel)
@@ -163,7 +163,7 @@ impl MontyIter {
                         .expect("index < len implies char exists");
                     *byte_offset += c.len_utf8();
                     self.index += 1;
-                    Ok(Some(allocate_char(c, vm.heap)?))
+                    Ok(Some(allocate_char(c, &vm.heap)?))
                 }
             }
             IterValue::InternBytes { bytes_id, len } => {
@@ -243,7 +243,7 @@ impl<T: ResourceTracker> Iterator for HeapedMontyIter<'_, '_, '_, T> {
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self.0.size_hint(self.1.heap);
+        let remaining = self.0.size_hint(&self.1.heap);
         (remaining, Some(remaining))
     }
 }
@@ -254,7 +254,9 @@ impl<'h> HeapRead<'h, MontyIter> {
     /// Returns `Ok(None)` when the iterator is exhausted.
     /// Returns `Err` for dict/set size changes or allocation failures.
     pub(crate) fn advance(&mut self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Option<Value>> {
-        let this = self.get_mut(vm.heap);
+        // Borrow only `vm.heap` so other VM fields (e.g. `vm.interns`) remain accessible
+        // while `this` is alive.
+        let this = self.get_mut(&mut vm.heap);
         match &mut this.iter_value {
             IterValue::Range { next, step, len } => {
                 if this.index >= *len {
@@ -281,7 +283,7 @@ impl<'h> HeapRead<'h, MontyIter> {
                         .expect("index < len implies char exists");
                     this.index += 1;
                     *byte_offset += c.len_utf8();
-                    Ok(Some(allocate_char(c, vm.heap)?))
+                    Ok(Some(allocate_char(c, &vm.heap)?))
                 }
             }
             IterValue::InternBytes { bytes_id, len } => {
@@ -314,7 +316,7 @@ impl<'h> HeapRead<'h, MontyIter> {
                 let Some(item) = item else {
                     return Ok(None);
                 };
-                self.get_mut(vm.heap).index += 1;
+                self.get_mut(vm).index += 1;
                 Ok(Some(item))
             }
         }
@@ -353,7 +355,7 @@ fn get_heap_item(
             ))
         }
         HeapData::DictKeysView(view) => {
-            let dict = view.dict(vm.heap);
+            let dict = view.dict(&vm.heap);
             if let Some(expected) = expected_len
                 && dict.len() != expected
             {
@@ -364,7 +366,7 @@ fn get_heap_item(
             ))
         }
         HeapData::DictItemsView(view) => {
-            let dict = view.dict(vm.heap);
+            let dict = view.dict(&vm.heap);
             if let Some(expected) = expected_len
                 && dict.len() != expected
             {
@@ -373,11 +375,11 @@ fn get_heap_item(
             let (key, value) = dict.item_at(index).expect("index should be valid");
             Ok(Some(super::allocate_tuple(
                 smallvec::smallvec![key.clone_with_heap(vm), value.clone_with_heap(vm)],
-                vm.heap,
+                &vm.heap,
             )?))
         }
         HeapData::DictValuesView(view) => {
-            let dict = view.dict(vm.heap);
+            let dict = view.dict(&vm.heap);
             if let Some(expected) = expected_len
                 && dict.len() != expected
             {
@@ -511,7 +513,7 @@ impl IterValue {
         match &value {
             Value::InternString(string_id) => Some(Self::from_str(vm.interns.get_str(*string_id))),
             Value::InternBytes(bytes_id) => Some(Self::from_intern_bytes(*bytes_id, vm.interns)),
-            Value::Ref(heap_id) => Self::from_heap_data(*heap_id, vm.heap),
+            Value::Ref(heap_id) => Self::from_heap_data(*heap_id, &vm.heap),
             _ => None,
         }
     }

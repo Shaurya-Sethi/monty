@@ -1442,7 +1442,7 @@ impl SimpleException {
 
 impl<'h> HeapRead<'h, SimpleException> {
     pub(crate) fn py_type(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Type {
-        Type::Exception(self.get(vm.heap).exc_type)
+        Type::Exception(self.get(vm).exc_type)
     }
 }
 
@@ -1493,13 +1493,13 @@ impl<'h> HeapRead<'h, SimpleException> {
 
         if is_args {
             // Construct tuple with 0 or 1 elements based on whether arg exists
-            let elements = if let Some(arg_str) = &self.get(vm.heap).arg {
+            let elements = if let Some(arg_str) = &self.get(vm).arg {
                 let str_id = vm.heap.allocate(HeapData::Str(Str::from(arg_str.clone())))?;
                 smallvec![Value::Ref(str_id)]
             } else {
                 smallvec![]
             };
-            Ok(Some(CallResult::Value(allocate_tuple(elements, vm.heap)?)))
+            Ok(Some(CallResult::Value(allocate_tuple(elements, &vm.heap)?)))
         } else {
             Ok(None)
         }

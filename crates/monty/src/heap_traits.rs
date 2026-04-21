@@ -8,7 +8,7 @@ use smallvec::SmallVec;
 
 use crate::{
     ResourceTracker,
-    heap::{Heap, HeapId, RecursionToken},
+    heap::{Heap, HeapId, HeapReader, RecursionToken},
     value::Value,
 };
 
@@ -67,6 +67,41 @@ impl<T: ResourceTracker> ContainsHeap for Heap<T> {
     }
     #[inline]
     fn heap_mut(&mut self) -> &mut Self {
+        self
+    }
+}
+
+/// Types that expose a `HeapReader<'h, T>` with invariant lifetime `'h`.
+///
+/// This is the wider counterpart to `ContainsHeap`: where `ContainsHeap` only requires
+/// access to the underlying `Heap`, `ContainsHeapReader` carries the invariant `'h`
+/// lifetime that gates `HeapRead<'h, _>` access. It lets `HeapRead::get`/`get_mut`
+/// accept either a bare `HeapReader` or any structure that owns one (in practice the
+/// `VM`), so call sites can pass `vm` directly instead of `&vm.heap`.
+///
+/// The safety boundary is unchanged — the only way to *construct* a `HeapReader<'h, T>`
+/// is still `HeapReader::with`, which gates `'h` via an HRTB. This trait only widens
+/// where an *existing* reader can be borrowed from.
+pub(crate) trait ContainsHeapReader<'h> {
+    type ResourceTracker: ResourceTracker;
+    /// Returns a shared reference to the contained `HeapReader`. Currently unused
+    /// inside the crate (the borrow chain is what `HeapRead::get` relies on) but
+    /// kept on the trait so callers that *do* need to extract the reader explicitly
+    /// can do so without a downcast.
+    #[expect(dead_code)]
+    fn heap_reader(&self) -> &HeapReader<'h, Self::ResourceTracker>;
+    /// Mutable counterpart of [`Self::heap_reader`].
+    #[expect(dead_code)]
+    fn heap_reader_mut(&mut self) -> &mut HeapReader<'h, Self::ResourceTracker>;
+}
+
+impl<'h, T: ResourceTracker> ContainsHeapReader<'h> for HeapReader<'h, T> {
+    type ResourceTracker = T;
+    fn heap_reader(&self) -> &Self {
+        self
+    }
+    #[inline]
+    fn heap_reader_mut(&mut self) -> &mut Self {
         self
     }
 }

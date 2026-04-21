@@ -441,7 +441,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::Exception(_) => true,
             Self::Dataclass(dc) => dc.py_bool(vm),
             Self::Iter(_) => true,
-            Self::LongInt(li) => !li.get(vm.heap).is_zero(),
+            Self::LongInt(li) => !li.get(vm).is_zero(),
             Self::Module(_) => true,
             Self::Coroutine(_) => true,
             Self::GatherFuture(_) => true,
@@ -547,24 +547,22 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
     fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, crate::ResourceError> {
         match (self, other) {
             // Simple types: compare with shared borrows (no &mut VM needed)
-            (HeapReadOutput::Str(a), HeapReadOutput::Str(b)) => Ok(a.get(vm.heap).as_str() == b.get(vm.heap).as_str()),
-            (HeapReadOutput::Bytes(a), HeapReadOutput::Bytes(b)) => {
-                Ok(a.get(vm.heap).as_slice() == b.get(vm.heap).as_slice())
-            }
-            (HeapReadOutput::LongInt(a), HeapReadOutput::LongInt(b)) => Ok(a.get(vm.heap) == b.get(vm.heap)),
+            (HeapReadOutput::Str(a), HeapReadOutput::Str(b)) => Ok(a.get(vm).as_str() == b.get(vm).as_str()),
+            (HeapReadOutput::Bytes(a), HeapReadOutput::Bytes(b)) => Ok(a.get(vm).as_slice() == b.get(vm).as_slice()),
+            (HeapReadOutput::LongInt(a), HeapReadOutput::LongInt(b)) => Ok(a.get(vm) == b.get(vm)),
             (HeapReadOutput::Closure(a), HeapReadOutput::Closure(b)) => {
-                let a = a.get(vm.heap);
-                let b = b.get(vm.heap);
+                let a = a.get(vm);
+                let b = b.get(vm);
                 Ok(a.func_id == b.func_id && a.cells == b.cells)
             }
             (HeapReadOutput::FunctionDefaults(a), HeapReadOutput::FunctionDefaults(b)) => {
-                Ok(a.get(vm.heap).func_id == b.get(vm.heap).func_id)
+                Ok(a.get(vm).func_id == b.get(vm).func_id)
             }
             (HeapReadOutput::Range(a), HeapReadOutput::Range(b)) => {
                 // Range::py_eq is pure data comparison — inline to avoid
                 // borrow conflict with the &mut VM signature
-                let a = a.get(vm.heap);
-                let b = b.get(vm.heap);
+                let a = a.get(vm);
+                let b = b.get(vm);
                 let len_a = a.len();
                 if len_a != b.len() {
                     Ok(false)
@@ -588,62 +586,62 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             | (HeapReadOutput::Tuple(t), HeapReadOutput::NamedTuple(nt)) => nt.eq_tuple(t, vm),
             // DictKeysView comparisons — copy view to local, pass HeapRead directly
             (HeapReadOutput::DictKeysView(a), HeapReadOutput::DictKeysView(b)) => {
-                let a_view = DictKeysView::new(a.get(vm.heap).dict_id());
-                let b_view = DictKeysView::new(b.get(vm.heap).dict_id());
+                let a_view = DictKeysView::new(a.get(vm).dict_id());
+                let b_view = DictKeysView::new(b.get(vm).dict_id());
                 a_view.eq_view(b_view, vm)
             }
             (HeapReadOutput::DictKeysView(a), HeapReadOutput::Set(b)) => {
-                let view = DictKeysView::new(a.get(vm.heap).dict_id());
+                let view = DictKeysView::new(a.get(vm).dict_id());
                 view.eq_set(b, vm)
             }
             (HeapReadOutput::Set(b), HeapReadOutput::DictKeysView(a)) => {
-                let view = DictKeysView::new(a.get(vm.heap).dict_id());
+                let view = DictKeysView::new(a.get(vm).dict_id());
                 view.eq_set(b, vm)
             }
             (HeapReadOutput::DictKeysView(a), HeapReadOutput::FrozenSet(b)) => {
-                let view = DictKeysView::new(a.get(vm.heap).dict_id());
+                let view = DictKeysView::new(a.get(vm).dict_id());
                 view.eq_frozenset(b, vm)
             }
             (HeapReadOutput::FrozenSet(b), HeapReadOutput::DictKeysView(a)) => {
-                let view = DictKeysView::new(a.get(vm.heap).dict_id());
+                let view = DictKeysView::new(a.get(vm).dict_id());
                 view.eq_frozenset(b, vm)
             }
             // DictItemsView comparisons
             (HeapReadOutput::DictItemsView(a), HeapReadOutput::DictItemsView(b)) => {
-                let a_view = DictItemsView::new(a.get(vm.heap).dict_id());
-                let b_view = DictItemsView::new(b.get(vm.heap).dict_id());
+                let a_view = DictItemsView::new(a.get(vm).dict_id());
+                let b_view = DictItemsView::new(b.get(vm).dict_id());
                 a_view.eq_view(b_view, vm)
             }
             (HeapReadOutput::DictItemsView(a), HeapReadOutput::Set(b)) => {
-                let view = DictItemsView::new(a.get(vm.heap).dict_id());
+                let view = DictItemsView::new(a.get(vm).dict_id());
                 view.eq_set(b, vm)
             }
             (HeapReadOutput::Set(b), HeapReadOutput::DictItemsView(a)) => {
-                let view = DictItemsView::new(a.get(vm.heap).dict_id());
+                let view = DictItemsView::new(a.get(vm).dict_id());
                 view.eq_set(b, vm)
             }
             (HeapReadOutput::DictItemsView(a), HeapReadOutput::FrozenSet(b)) => {
-                let view = DictItemsView::new(a.get(vm.heap).dict_id());
+                let view = DictItemsView::new(a.get(vm).dict_id());
                 view.eq_frozenset(b, vm)
             }
             (HeapReadOutput::FrozenSet(b), HeapReadOutput::DictItemsView(a)) => {
-                let view = DictItemsView::new(a.get(vm.heap).dict_id());
+                let view = DictItemsView::new(a.get(vm).dict_id());
                 view.eq_frozenset(b, vm)
             }
             (HeapReadOutput::Dataclass(a), HeapReadOutput::Dataclass(b)) => {
-                if a.get(vm.heap).name(vm.interns) != b.get(vm.heap).name(vm.interns) {
+                if a.get(vm).name(vm.interns) != b.get(vm).name(vm.interns) {
                     return Ok(false);
                 }
                 a.attrs().py_eq(&b.attrs(), vm)
             }
             // Pure data comparisons (no VM needed)
             (HeapReadOutput::Slice(a), HeapReadOutput::Slice(b)) => {
-                let a = a.get(vm.heap);
-                let b = b.get(vm.heap);
+                let a = a.get(vm);
+                let b = b.get(vm);
                 Ok(a.start == b.start && a.stop == b.stop && a.step == b.step)
             }
-            (HeapReadOutput::Path(a), HeapReadOutput::Path(b)) => Ok(a.get(vm.heap) == b.get(vm.heap)),
-            (HeapReadOutput::RePattern(a), HeapReadOutput::RePattern(b)) => Ok(a.get(vm.heap) == b.get(vm.heap)),
+            (HeapReadOutput::Path(a), HeapReadOutput::Path(b)) => Ok(a.get(vm) == b.get(vm)),
+            (HeapReadOutput::RePattern(a), HeapReadOutput::RePattern(b)) => Ok(a.get(vm) == b.get(vm)),
             // Datetime types
             (HeapReadOutput::Date(a), HeapReadOutput::Date(b)) => a.py_eq(b, vm),
             (HeapReadOutput::DateTime(a), HeapReadOutput::DateTime(b)) => a.py_eq(b, vm),
@@ -683,34 +681,34 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::FrozenSet(fs) => fs.py_repr_fmt(f, vm, heap_ids),
             Self::Closure(closure) => Ok(vm
                 .interns
-                .get_function(closure.get(vm.heap).func_id)
+                .get_function(closure.get(vm).func_id)
                 .py_repr_fmt(f, vm.interns, 0)?),
             Self::FunctionDefaults(fd) => Ok(vm
                 .interns
-                .get_function(fd.get(vm.heap).func_id)
+                .get_function(fd.get(vm).func_id)
                 .py_repr_fmt(f, vm.interns, 0)?),
-            Self::Cell(cell) => Ok(write!(f, "<cell: {} object>", cell.get(vm.heap).0.py_type(vm))?),
+            Self::Cell(cell) => Ok(write!(f, "<cell: {} object>", cell.get(vm).0.py_type(vm))?),
             Self::Range(r) => r.py_repr_fmt(f, vm, heap_ids),
             Self::Slice(s) => s.py_repr_fmt(f, vm, heap_ids),
-            Self::Exception(e) => Ok(e.get(vm.heap).py_repr_fmt(f)?),
+            Self::Exception(e) => Ok(e.get(vm).py_repr_fmt(f)?),
             Self::Dataclass(dc) => dc.py_repr_fmt(f, vm, heap_ids),
             Self::Iter(_) => Ok(write!(f, "<iterator>")?),
             Self::LongInt(li) => {
-                let li = li.get(vm.heap);
+                let li = li.get(vm);
                 li.check_str_digits_limit()?;
                 Ok(write!(f, "{li}")?)
             }
-            Self::Module(m) => Ok(write!(f, "<module '{}'>", vm.interns.get_str(m.get(vm.heap).name()))?),
+            Self::Module(m) => Ok(write!(f, "<module '{}'>", vm.interns.get_str(m.get(vm).name()))?),
             Self::Coroutine(coro) => {
-                let func = vm.interns.get_function(coro.get(vm.heap).func_id);
+                let func = vm.interns.get_function(coro.get(vm).func_id);
                 let name = vm.interns.get_str(func.name.name_id);
                 Ok(write!(f, "<coroutine object {name}>")?)
             }
-            Self::GatherFuture(gather) => Ok(write!(f, "<gather({})>", gather.get(vm.heap).item_count())?),
+            Self::GatherFuture(gather) => Ok(write!(f, "<gather({})>", gather.get(vm).item_count())?),
             Self::Path(p) => p.py_repr_fmt(f, vm, heap_ids),
             Self::ReMatch(m) => m.py_repr_fmt(f, vm, heap_ids),
             Self::RePattern(p) => p.py_repr_fmt(f, vm, heap_ids),
-            Self::ExtFunction(name) => Ok(write!(f, "<function '{}' external>", name.get(vm.heap))?),
+            Self::ExtFunction(name) => Ok(write!(f, "<function '{}' external>", name.get(vm))?),
             Self::Date(d) => d.py_repr_fmt(f, vm, heap_ids),
             Self::DateTime(d) => d.py_repr_fmt(f, vm, heap_ids),
             Self::TimeDelta(d) => d.py_repr_fmt(f, vm, heap_ids),
@@ -721,17 +719,17 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
     fn py_str(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
         match self {
             // Strings return their value directly without quotes
-            Self::Str(s) => Ok(Cow::Owned(s.get(vm.heap).as_str().to_owned())),
+            Self::Str(s) => Ok(Cow::Owned(s.get(vm).as_str().to_owned())),
             // LongInt returns its string representation
             Self::LongInt(li) => {
-                let li = li.get(vm.heap);
+                let li = li.get(vm);
                 li.check_str_digits_limit()?;
                 Ok(Cow::Owned(li.to_string()))
             }
             // Exceptions return just the message (or empty string if no message)
-            Self::Exception(e) => Ok(Cow::Owned(e.get(vm.heap).py_str())),
+            Self::Exception(e) => Ok(Cow::Owned(e.get(vm).py_str())),
             // Paths return the path string without the PosixPath() wrapper
-            Self::Path(p) => Ok(Cow::Owned(p.get(vm.heap).as_str().to_owned())),
+            Self::Path(p) => Ok(Cow::Owned(p.get(vm).as_str().to_owned())),
             // Datetime types have their own str output
             Self::Date(d) => d.py_str(vm),
             Self::DateTime(d) => d.py_str(vm),
@@ -749,12 +747,12 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
     ) -> Result<Option<Value>, crate::ResourceError> {
         match (self, other) {
             (HeapReadOutput::Str(a), HeapReadOutput::Str(b)) => {
-                let concat = format!("{}{}", a.get(vm.heap).as_str(), b.get(vm.heap).as_str());
+                let concat = format!("{}{}", a.get(vm).as_str(), b.get(vm).as_str());
                 Ok(Some(Value::Ref(vm.heap.allocate(HeapData::Str(concat.into()))?)))
             }
             (HeapReadOutput::Bytes(a), HeapReadOutput::Bytes(b)) => {
-                let a_bytes = a.get(vm.heap).as_slice();
-                let b_bytes = b.get(vm.heap).as_slice();
+                let a_bytes = a.get(vm).as_slice();
+                let b_bytes = b.get(vm).as_slice();
                 let mut result = Vec::with_capacity(a_bytes.len() + b_bytes.len());
                 result.extend_from_slice(a_bytes);
                 result.extend_from_slice(b_bytes);
@@ -763,25 +761,25 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             (HeapReadOutput::List(a), HeapReadOutput::List(b)) => a.py_add(b, vm),
             (HeapReadOutput::Tuple(a), HeapReadOutput::Tuple(b)) => a.py_add(b, vm),
             (HeapReadOutput::LongInt(a), HeapReadOutput::LongInt(b)) => {
-                let bi = a.get(vm.heap).inner() + b.get(vm.heap).inner();
-                Ok(LongInt::new(bi).into_value(vm.heap).map(Some)?)
+                let bi = a.get(vm).inner() + b.get(vm).inner();
+                Ok(LongInt::new(bi).into_value(&vm.heap).map(Some)?)
             }
             // Datetime arithmetic: copy small values to release the borrow before allocating
             (HeapReadOutput::Date(d), HeapReadOutput::TimeDelta(td))
             | (HeapReadOutput::TimeDelta(td), HeapReadOutput::Date(d)) => {
-                let d = *d.get(vm.heap);
-                let td = *td.get(vm.heap);
-                date::py_add(d, td, vm.heap)
+                let d = *d.get(vm);
+                let td = *td.get(vm);
+                date::py_add(d, td, &mut vm.heap)
             }
             (HeapReadOutput::DateTime(dt), HeapReadOutput::TimeDelta(td))
             | (HeapReadOutput::TimeDelta(td), HeapReadOutput::DateTime(dt)) => {
-                let dt = dt.get(vm.heap).clone();
-                let td = *td.get(vm.heap);
-                datetime::py_add(&dt, &td, vm.heap)
+                let dt = dt.get(vm).clone();
+                let td = *td.get(vm);
+                datetime::py_add(&dt, &td, &mut vm.heap)
             }
             (HeapReadOutput::TimeDelta(a), HeapReadOutput::TimeDelta(b)) => {
-                let total = timedelta::total_microseconds(a.get(vm.heap))
-                    .checked_add(timedelta::total_microseconds(b.get(vm.heap)));
+                let total =
+                    timedelta::total_microseconds(a.get(vm)).checked_add(timedelta::total_microseconds(b.get(vm)));
                 let Some(total) = total else { return Ok(None) };
                 let Ok(result) = timedelta::from_total_microseconds(total) else {
                     return Ok(None);
@@ -799,23 +797,23 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
     ) -> Result<Option<Value>, crate::ResourceError> {
         match (self, other) {
             (HeapReadOutput::LongInt(a), HeapReadOutput::LongInt(b)) => {
-                let bi = a.get(vm.heap).inner() - b.get(vm.heap).inner();
-                Ok(LongInt::new(bi).into_value(vm.heap).map(Some)?)
+                let bi = a.get(vm).inner() - b.get(vm).inner();
+                Ok(LongInt::new(bi).into_value(&vm.heap).map(Some)?)
             }
             // Datetime same-type subtraction: copy small values to release borrow before allocating
             (HeapReadOutput::Date(a), HeapReadOutput::Date(b)) => {
-                let a = *a.get(vm.heap);
-                let b = *b.get(vm.heap);
-                date::py_sub_date(a, b, vm.heap)
+                let a = *a.get(vm);
+                let b = *b.get(vm);
+                date::py_sub_date(a, b, &mut vm.heap)
             }
             (HeapReadOutput::DateTime(a), HeapReadOutput::DateTime(b)) => {
-                let a = a.get(vm.heap).clone();
-                let b = b.get(vm.heap).clone();
-                datetime::py_sub_datetime(&a, &b, vm.heap)
+                let a = a.get(vm).clone();
+                let b = b.get(vm).clone();
+                datetime::py_sub_datetime(&a, &b, &mut vm.heap)
             }
             (HeapReadOutput::TimeDelta(a), HeapReadOutput::TimeDelta(b)) => {
-                let total = timedelta::total_microseconds(a.get(vm.heap))
-                    .checked_sub(timedelta::total_microseconds(b.get(vm.heap)));
+                let total =
+                    timedelta::total_microseconds(a.get(vm)).checked_sub(timedelta::total_microseconds(b.get(vm)));
                 let Some(total) = total else { return Ok(None) };
                 let Ok(result) = timedelta::from_total_microseconds(total) else {
                     return Ok(None);
@@ -824,14 +822,14 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             }
             // Cross-type datetime subtraction
             (HeapReadOutput::Date(d), HeapReadOutput::TimeDelta(td)) => {
-                let d = *d.get(vm.heap);
-                let td = *td.get(vm.heap);
-                date::py_sub_timedelta(d, td, vm.heap)
+                let d = *d.get(vm);
+                let td = *td.get(vm);
+                date::py_sub_timedelta(d, td, &mut vm.heap)
             }
             (HeapReadOutput::DateTime(dt), HeapReadOutput::TimeDelta(td)) => {
-                let dt = dt.get(vm.heap).clone();
-                let td = *td.get(vm.heap);
-                datetime::py_sub_timedelta(&dt, &td, vm.heap)
+                let dt = dt.get(vm).clone();
+                let td = *td.get(vm);
+                datetime::py_sub_timedelta(&dt, &td, &mut vm.heap)
             }
             _ => Ok(None),
         }
@@ -840,11 +838,11 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
     fn py_mod(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Option<Value>> {
         match (self, other) {
             (HeapReadOutput::LongInt(a), HeapReadOutput::LongInt(b)) => {
-                if b.get(vm.heap).is_zero() {
+                if b.get(vm).is_zero() {
                     Err(ExcType::zero_division().into())
                 } else {
-                    let bi = a.get(vm.heap).inner().mod_floor(b.get(vm.heap).inner());
-                    Ok(LongInt::new(bi).into_value(vm.heap).map(Some)?)
+                    let bi = a.get(vm).inner().mod_floor(b.get(vm).inner());
+                    Ok(LongInt::new(bi).into_value(&vm.heap).map(Some)?)
                 }
             }
             _ => Ok(None),

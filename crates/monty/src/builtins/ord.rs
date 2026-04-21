@@ -15,7 +15,7 @@ use crate::{
 ///
 /// Returns the Unicode code point of a one-character string.
 pub fn builtin_ord(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("ord", vm.heap)?;
+    let value = args.get_one_arg("ord", &mut vm.heap)?;
     defer_drop!(value, vm);
 
     match value {

@@ -141,14 +141,14 @@ impl Dict {
         value: Value,
         vm: &mut VM<'_, '_, impl ResourceTracker>,
     ) -> RunResult<Option<Value>> {
-        debug_assert!(json_key_string_slice(&key, vm.heap, vm.interns).is_some());
+        debug_assert!(json_key_string_slice(&key, &vm.heap, vm.interns).is_some());
 
         if matches!(key, Value::Ref(_)) || matches!(value, Value::Ref(_)) {
             self.contains_refs = true;
         }
 
         let hash = key.py_hash(vm)?.expect("json object keys are always hashable strings");
-        let opt_index = self.find_json_string_key_index(hash, &key, vm.heap, vm.interns);
+        let opt_index = self.find_json_string_key_index(hash, &key, &vm.heap, vm.interns);
 
         let entry = DictEntry { key, value, hash };
         if let Some(index) = opt_index {
@@ -231,7 +231,7 @@ impl<'h> HeapRead<'h, Dict> {
     ) -> RunResult<Option<Value>> {
         let (opt_index, _hash) = self.find_index_hash(key, vm)?;
         if let Some(index) = opt_index {
-            Ok(Some(self.get(vm.heap).entries[index].value.clone_with_heap(vm.heap)))
+            Ok(Some(self.get(vm).entries[index].value.clone_with_heap(vm)))
         } else {
             Ok(None)
         }
@@ -305,7 +305,7 @@ impl<'h> HeapRead<'h, Dict> {
     ) -> RunResult<Option<Value>> {
         // Track if we're adding a reference for GC optimization
         if matches!(key, Value::Ref(_)) || matches!(value, Value::Ref(_)) {
-            self.get_mut(vm.heap).contains_refs = true;
+            self.get_mut(vm).contains_refs = true;
         }
 
         // Handle hash computation errors explicitly so we can drop key/value properly
@@ -322,7 +322,7 @@ impl<'h> HeapRead<'h, Dict> {
         let entry = DictEntry { key, value, hash };
         if let Some(index) = opt_index {
             // Key exists, replace in place to preserve insertion order
-            let old_entry = mem::replace(&mut self.get_mut(vm.heap).entries[index], entry);
+            let old_entry = mem::replace(&mut self.get_mut(vm).entries[index], entry);
 
             // Decrement refcount for old key (we're discarding it)
             old_entry.key.drop_with_heap(vm);
@@ -332,7 +332,7 @@ impl<'h> HeapRead<'h, Dict> {
             // Key doesn't exist — track memory growth before adding the new entry.
             // Growth unit is 2 * size_of::<Value>() to match Dict::py_estimate_size.
             vm.heap.track_growth(2 * VALUE_SIZE)?;
-            let this = self.get_mut(vm.heap);
+            let this = self.get_mut(vm);
             let index = this.entries.len();
             this.entries.push(entry);
             this.indices
@@ -354,9 +354,9 @@ impl<'h> HeapRead<'h, Dict> {
 
         if let Some(index) = opt_index {
             // Remove the entry
-            let entry = self.get_mut(vm.heap).entries.remove(index);
+            let entry = self.get_mut(vm).entries.remove(index);
             // Remove from index table and rebuild (same as dict_popitem)
-            let this = self.get_mut(vm.heap);
+            let this = self.get_mut(vm);
             this.indices.clear();
             for (idx, e) in this.entries.iter().enumerate() {
                 this.indices.insert_unique(e.hash, idx, |&i| this.entries[i].hash);
@@ -468,7 +468,7 @@ impl<'h> HeapRead<'h, Dict> {
         //
         // Collect candidate indices during the lookup to avoid borrow tracker issues
         let mut candidates: SmallVec<[usize; 2]> = SmallVec::new();
-        let this = self.get(vm.heap);
+        let this = self.get(vm);
         this.indices.find(hash, |v| {
             if this.entries[*v].hash == hash {
                 candidates.push(*v);
@@ -477,7 +477,7 @@ impl<'h> HeapRead<'h, Dict> {
         });
 
         for candidate_index in candidates {
-            let candidate_key = self.get(vm.heap).entries[candidate_index].key.clone_with_heap(vm);
+            let candidate_key = self.get(vm).entries[candidate_index].key.clone_with_heap(vm);
             defer_drop!(candidate_key, vm);
             if key.py_eq(candidate_key, vm)? {
                 return Ok((Some(candidate_index), hash));
@@ -503,9 +503,9 @@ impl<'h> HeapRead<'h, Dict> {
         if let Value::Ref(id) = other_value {
             let src_id = *id;
             if let HeapReadOutput::Dict(src) = vm.heap.read(src_id) {
-                let len = src.get(vm.heap).entries.len();
+                let len = src.get(vm).entries.len();
                 for i in 0..len {
-                    let entry = &src.get(vm.heap).entries[i];
+                    let entry = &src.get(vm).entries[i];
                     let key = entry.key.clone_with_heap(vm);
                     let value = entry.value.clone_with_heap(vm);
                     let old_value = self.set(key, value, vm)?;
@@ -633,22 +633,22 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
     }
 
     fn py_len(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
-        Some(self.get(vm.heap).len())
+        Some(self.get(vm).len())
     }
 
     fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
-        if self.get(vm.heap).len() != other.get(vm.heap).len() {
+        if self.get(vm).len() != other.get(vm).len() {
             return Ok(false);
         }
         let token = vm.heap.incr_recursion_depth()?;
         defer_drop!(token, vm);
-        let len = self.get(vm.heap).len();
+        let len = self.get(vm).len();
         for i in 0..len {
             vm.heap.check_time()?;
-            let key = self.get(vm.heap).key_at(i).expect("index valid").clone_with_heap(vm);
+            let key = self.get(vm).key_at(i).expect("index valid").clone_with_heap(vm);
             defer_drop!(key, vm);
             if let Ok(Some(other_value)) = other.dict_get(key, vm) {
-                let self_value = self.get(vm.heap).value_at(i).expect("index valid").clone_with_heap(vm);
+                let self_value = self.get(vm).value_at(i).expect("index valid").clone_with_heap(vm);
                 let eq = self_value.py_eq(&other_value, vm);
                 self_value.drop_with_heap(vm);
                 other_value.drop_with_heap(vm);
@@ -663,7 +663,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
     }
 
     fn py_bool(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
-        !self.get(vm.heap).is_empty()
+        !self.get(vm).is_empty()
     }
 
     fn py_repr_fmt(
@@ -672,11 +672,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
         vm: &VM<'h, '_, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
-        if self.get(vm.heap).is_empty() {
+        if self.get(vm).is_empty() {
             return Ok(f.write_str("{}")?);
         }
 
-        let heap = &*vm.heap;
+        let heap = &vm.heap;
         // Check depth limit before recursing
         let Some(token) = heap.incr_recursion_depth_for_repr() else {
             return Ok(f.write_str("{...}")?);
@@ -733,7 +733,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
         let value = match method {
             StaticStrings::Get => {
                 // dict.get() accepts 1 or 2 arguments
-                let (key, default) = args.get_one_two_args("get", vm.heap)?;
+                let (key, default) = args.get_one_two_args("get", &mut vm.heap)?;
                 defer_drop!(key, vm);
                 let default = default.unwrap_or(Value::None);
                 let mut default_guard = HeapGuard::new(default, vm);
@@ -745,13 +745,13 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
                 }
             }
             StaticStrings::Keys => {
-                args.check_zero_args("dict.keys", vm.heap)?;
+                args.check_zero_args("dict.keys", &mut vm.heap)?;
                 let view_id = vm.heap.allocate(HeapData::DictKeysView(DictKeysView::new(self_id)))?;
                 vm.heap.inc_ref(self_id);
                 Ok(Value::Ref(view_id))
             }
             StaticStrings::Values => {
-                args.check_zero_args("dict.values", vm.heap)?;
+                args.check_zero_args("dict.values", &mut vm.heap)?;
                 let view_id = vm
                     .heap
                     .allocate(HeapData::DictValuesView(DictValuesView::new(self_id)))?;
@@ -759,14 +759,14 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
                 Ok(Value::Ref(view_id))
             }
             StaticStrings::Items => {
-                args.check_zero_args("dict.items", vm.heap)?;
+                args.check_zero_args("dict.items", &mut vm.heap)?;
                 let view_id = vm.heap.allocate(HeapData::DictItemsView(DictItemsView::new(self_id)))?;
                 vm.heap.inc_ref(self_id);
                 Ok(Value::Ref(view_id))
             }
             StaticStrings::Pop => {
                 // dict.pop() accepts 1 or 2 arguments (key, optional default)
-                let (key, default) = args.get_one_two_args("pop", vm.heap)?;
+                let (key, default) = args.get_one_two_args("pop", &mut vm.heap)?;
                 defer_drop!(key, vm);
                 let mut default_guard = HeapGuard::new(default, vm);
                 let vm = default_guard.heap();
@@ -785,18 +785,18 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
                 }
             }
             StaticStrings::Clear => {
-                args.check_zero_args("dict.clear", vm.heap)?;
+                args.check_zero_args("dict.clear", &mut vm.heap)?;
                 dict_clear(self, vm);
                 Ok(Value::None)
             }
             StaticStrings::Copy => {
-                args.check_zero_args("dict.copy", vm.heap)?;
+                args.check_zero_args("dict.copy", &mut vm.heap)?;
                 dict_copy(self, vm)
             }
             StaticStrings::Update => dict_update(self, args, vm),
             StaticStrings::Setdefault => dict_setdefault(self, args, vm),
             StaticStrings::Popitem => {
-                args.check_zero_args("dict.popitem", vm.heap)?;
+                args.check_zero_args("dict.popitem", &mut vm.heap)?;
                 dict_popitem(self, vm)
             }
             // fromkeys is a classmethod but also accessible on instances
@@ -853,8 +853,8 @@ impl DropWithHeap for DictEntry {
 ///
 /// Removes all items from the dict.
 fn dict_clear<'h>(dict: &mut HeapRead<'h, Dict>, vm: &mut VM<'h, '_, impl ResourceTracker>) {
-    dict.get_mut(vm.heap).indices.clear();
-    mem::take(&mut dict.get_mut(vm.heap).entries).drop_with_heap(vm.heap);
+    dict.get_mut(vm).indices.clear();
+    mem::take(&mut dict.get_mut(vm).entries).drop_with_heap(vm);
     // Note: contains_refs stays true even if all refs removed, per conservative GC strategy
 }
 
@@ -864,7 +864,7 @@ fn dict_clear<'h>(dict: &mut HeapRead<'h, Dict>, vm: &mut VM<'h, '_, impl Resour
 fn dict_copy<'h>(dict: &mut HeapRead<'h, Dict>, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
     // Copy all key-value pairs (incrementing refcounts)
     let pairs: Vec<(Value, Value)> = dict
-        .get(vm.heap)
+        .get(vm)
         .iter()
         .map(|(k, v)| (k.clone_with_heap(vm), v.clone_with_heap(vm)))
         .collect();
@@ -1014,7 +1014,7 @@ fn dict_setdefault<'h>(
     args: ArgValues,
     vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let (key, default) = args.get_one_two_args("setdefault", vm.heap)?;
+    let (key, default) = args.get_one_two_args("setdefault", &mut vm.heap)?;
     let default = default.unwrap_or(Value::None);
     let mut key_guard = HeapGuard::new(key, vm);
     let (key, vm) = key_guard.as_parts();
@@ -1039,7 +1039,7 @@ fn dict_setdefault<'h>(
 /// Removes and returns the last inserted key-value pair as a tuple.
 /// Raises KeyError if the dict is empty.
 fn dict_popitem<'h>(dict: &mut HeapRead<'h, Dict>, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
-    let this = dict.get_mut(vm.heap);
+    let this = dict.get_mut(vm);
     if this.is_empty() {
         return Err(ExcType::key_error_popitem_empty_dict());
     }
@@ -1058,7 +1058,7 @@ fn dict_popitem<'h>(dict: &mut HeapRead<'h, Dict>, vm: &mut VM<'h, '_, impl Reso
     }
 
     // Create tuple (key, value)
-    Ok(allocate_tuple(smallvec![entry.key, entry.value], vm.heap)?)
+    Ok(allocate_tuple(smallvec![entry.key, entry.value], &vm.heap)?)
 }
 
 // Custom serde implementation for Dict.
@@ -1105,7 +1105,7 @@ impl<'de> serde::Deserialize<'de> for Dict {
 /// dict.fromkeys(['a', 'b'], 0)    # {'a': 0, 'b': 0}
 /// ```
 pub fn dict_fromkeys(args: ArgValues, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
-    let (iterable, default) = args.get_one_two_args("dict.fromkeys", vm.heap)?;
+    let (iterable, default) = args.get_one_two_args("dict.fromkeys", &mut vm.heap)?;
     let default = default.unwrap_or(Value::None);
     defer_drop!(default, vm);
 

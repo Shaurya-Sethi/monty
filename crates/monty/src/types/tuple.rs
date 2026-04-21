@@ -101,7 +101,7 @@ impl Tuple {
     /// - `tuple()` with no args returns an empty tuple (singleton)
     /// - `tuple(iterable)` creates a tuple from any iterable (list, tuple, range, str, bytes, dict)
     pub fn init(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-        let value = args.get_zero_one_arg("tuple", vm.heap)?;
+        let value = args.get_zero_one_arg("tuple", &mut vm.heap)?;
         match value {
             None => {
                 // Use empty tuple singleton
@@ -109,7 +109,7 @@ impl Tuple {
             }
             Some(v) => {
                 let items = MontyIter::new(v, vm)?.collect(vm)?;
-                Ok(allocate_tuple(items, vm.heap)?)
+                Ok(allocate_tuple(items, &vm.heap)?)
             }
         }
     }
@@ -157,12 +157,12 @@ pub fn allocate_tuple(
 impl<'h> HeapRead<'h, Tuple> {
     /// Clones the item at the given index with proper refcount management.
     pub(crate) fn clone_item(&self, index: usize, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Value {
-        self.get(vm.heap).items[index].clone_with_heap(vm)
+        self.get(vm).items[index].clone_with_heap(vm)
     }
 
     /// Clones all items from this tuple with proper refcount management.
     fn clone_all_items(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> TupleVec {
-        let len = self.get(vm.heap).items.len();
+        let len = self.get(vm).items.len();
         let mut result = TupleVec::with_capacity(len);
         for i in 0..len {
             result.push(self.clone_item(i, vm));
@@ -177,7 +177,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
     }
 
     fn py_len(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
-        Some(self.get(vm.heap).items.len())
+        Some(self.get(vm).items.len())
     }
 
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
@@ -186,15 +186,15 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
             && let HeapData::Slice(slice_obj) = vm.heap.get(*key_id)
         {
             let (start, stop, step) = slice_obj
-                .indices(self.get(vm.heap).items.len())
+                .indices(self.get(vm).items.len())
                 .map_err(|()| ExcType::value_error_slice_step_zero())?;
-            let items = get_slice_items(&self.get(vm.heap).items, start, stop, step, vm.heap)?;
-            return Ok(allocate_tuple(items.into(), vm.heap)?);
+            let items = get_slice_items(&self.get(vm).items, start, stop, step, &vm.heap)?;
+            return Ok(allocate_tuple(items.into(), &vm.heap)?);
         }
 
         // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt
         let index = key.as_index(vm, Type::Tuple)?;
-        let len = self.get(vm.heap).as_slice().len();
+        let len = self.get(vm).as_slice().len();
         let len_i64 = i64::try_from(len).expect("tuple length exceeds i64::MAX");
         let normalized = if index < 0 { index + len_i64 } else { index };
 
@@ -207,8 +207,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
     }
 
     fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
-        let a_len = self.get(vm.heap).items.len();
-        if a_len != other.get(vm.heap).items.len() {
+        let a_len = self.get(vm).items.len();
+        if a_len != other.get(vm).items.len() {
             return Ok(false);
         }
         let token = vm.heap.incr_recursion_depth()?;
@@ -240,8 +240,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
         other: &Self,
         vm: &mut VM<'h, '_, impl ResourceTracker>,
     ) -> Result<Option<Ordering>, ResourceError> {
-        let a_len = self.get(vm.heap).items.len();
-        let b_len = other.get(vm.heap).items.len();
+        let a_len = self.get(vm).items.len();
+        let b_len = other.get(vm).items.len();
         let min_len = a_len.min(b_len);
         let token = vm.heap.incr_recursion_depth()?;
         defer_drop!(token, vm);
@@ -271,7 +271,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
     fn py_add(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<Option<Value>, ResourceError> {
         let mut items = self.clone_all_items(vm);
         items.extend(other.clone_all_items(vm));
-        Ok(Some(allocate_tuple(items, vm.heap)?))
+        Ok(Some(allocate_tuple(items, &vm.heap)?))
     }
 
     fn py_call_attr(
@@ -292,7 +292,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
     }
 
     fn py_bool(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
-        !self.get(vm.heap).items.is_empty()
+        !self.get(vm).items.is_empty()
     }
 
     fn py_repr_fmt(
@@ -301,7 +301,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
         vm: &VM<'h, '_, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
-        repr_sequence_fmt('(', ')', &self.get(vm.heap).items, f, vm, heap_ids)
+        repr_sequence_fmt('(', ')', &self.get(vm).items, f, vm, heap_ids)
     }
 }
 
@@ -338,10 +338,10 @@ fn tuple_index<'h>(
     args: ArgValues,
     vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let pos_args = args.into_pos_only("tuple.index", vm.heap)?;
+    let pos_args = args.into_pos_only("tuple.index", &mut vm.heap)?;
     defer_drop!(pos_args, vm);
 
-    let len = tuple.get(vm.heap).as_slice().len();
+    let len = tuple.get(vm).as_slice().len();
     let (value, start, end) = match pos_args.as_slice() {
         [] => return Err(ExcType::type_error_at_least("tuple.index", 1, 0)),
         [value] => (value, 0, len),
@@ -377,10 +377,10 @@ fn tuple_count<'h>(
     args: ArgValues,
     vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let value = args.get_one_arg("tuple.count", vm.heap)?;
+    let value = args.get_one_arg("tuple.count", &mut vm.heap)?;
     defer_drop!(value, vm);
 
-    let len = tuple.get(vm.heap).as_slice().len();
+    let len = tuple.get(vm).as_slice().len();
     let mut count = 0usize;
     for i in 0..len {
         let item = tuple.clone_item(i, vm);

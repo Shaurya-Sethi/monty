@@ -250,7 +250,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
     }
 
     fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
-        Ok(*self.get(vm.heap) == *other.get(vm.heap))
+        Ok(*self.get(vm) == *other.get(vm))
     }
 
     fn py_cmp(
@@ -258,7 +258,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
         other: &Self,
         vm: &mut VM<'h, '_, impl ResourceTracker>,
     ) -> Result<Option<Ordering>, ResourceError> {
-        Ok(self.get(vm.heap).partial_cmp(other.get(vm.heap)))
+        Ok(self.get(vm).partial_cmp(other.get(vm)))
     }
 
     fn py_bool(&self, _vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
@@ -271,13 +271,13 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
         vm: &VM<'h, '_, impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
-        let (year, month, day) = to_ymd(*self.get(vm.heap));
+        let (year, month, day) = to_ymd(*self.get(vm));
         write!(f, "datetime.date({year}, {month}, {day})")?;
         Ok(())
     }
 
     fn py_str(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
-        let (year, month, day) = to_ymd(*self.get(vm.heap));
+        let (year, month, day) = to_ymd(*self.get(vm));
         Ok(Cow::Owned(format!("{year:04}-{month:02}-{day:02}")))
     }
 
@@ -288,17 +288,17 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
         attr: &EitherStr,
         args: ArgValues,
     ) -> RunResult<CallResult> {
-        let date = *self.get(vm.heap);
+        let date = *self.get(vm);
         match attr.string_id() {
             Some(id) if id == StaticStrings::Isoformat => {
-                args.check_zero_args("date.isoformat", vm.heap)?;
+                args.check_zero_args("date.isoformat", &mut vm.heap)?;
                 let (year, month, day) = to_ymd(date);
                 Ok(CallResult::Value(Value::Ref(vm.heap.allocate(HeapData::Str(
                     Str::new(format!("{year:04}-{month:02}-{day:02}")),
                 ))?)))
             }
             Some(id) if id == StaticStrings::Strftime => {
-                let fmt = extract_strftime_arg(args, "date.strftime", vm.heap, vm.interns)?;
+                let fmt = extract_strftime_arg(args, "date.strftime", &mut vm.heap, vm.interns)?;
                 let formatted = date.0.format(&fmt).to_string();
                 Ok(CallResult::Value(Value::Ref(
                     vm.heap.allocate(HeapData::Str(Str::new(formatted)))?,
@@ -307,20 +307,20 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
             Some(id) if id == StaticStrings::Replace => {
                 let (year, month, day) = to_ymd(date);
                 let (new_year, new_month, new_day) =
-                    extract_date_replace_kwargs(args, year, month, day, vm.heap, vm.interns)?;
+                    extract_date_replace_kwargs(args, year, month, day, &mut vm.heap, vm.interns)?;
                 let new_date = from_ymd(new_year, new_month, new_day)?;
                 Ok(CallResult::Value(Value::Ref(
                     vm.heap.allocate(HeapData::Date(new_date))?,
                 )))
             }
             Some(id) if id == StaticStrings::Weekday => {
-                args.check_zero_args("date.weekday", vm.heap)?;
+                args.check_zero_args("date.weekday", &mut vm.heap)?;
                 Ok(CallResult::Value(Value::Int(i64::from(
                     date.0.weekday().num_days_from_monday(),
                 ))))
             }
             Some(id) if id == StaticStrings::Isoweekday => {
-                args.check_zero_args("date.isoweekday", vm.heap)?;
+                args.check_zero_args("date.isoweekday", &mut vm.heap)?;
                 Ok(CallResult::Value(Value::Int(i64::from(
                     date.0.weekday().number_from_monday(),
                 ))))
@@ -330,7 +330,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
-        let (year, month, day) = to_ymd(*self.get(vm.heap));
+        let (year, month, day) = to_ymd(*self.get(vm));
         match attr.string_id() {
             Some(id) if id == StaticStrings::Year => Ok(Some(CallResult::Value(Value::Int(i64::from(year))))),
             Some(id) if id == StaticStrings::Month => Ok(Some(CallResult::Value(Value::Int(i64::from(month))))),

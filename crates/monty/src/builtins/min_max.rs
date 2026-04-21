@@ -181,7 +181,7 @@ fn parse_min_max_kwargs(
         func_name,
         "key",
         "default",
-        vm.heap,
+        &mut vm.heap,
         vm.interns,
         ExcType::type_error_unexpected_keyword,
     )?;

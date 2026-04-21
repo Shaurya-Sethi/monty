@@ -97,7 +97,7 @@ impl JsonDumpsConfig {
 
         for (key, value) in kwargs_iter {
             defer_drop!(key, vm);
-            let Some(keyword_name) = key.as_either_str(vm.heap) else {
+            let Some(keyword_name) = key.as_either_str(&vm.heap) else {
                 value.drop_with_heap(vm);
                 return Err(ExcType::type_error_kwargs_nonstring_key());
             };
@@ -235,7 +235,7 @@ pub(super) fn call_dumps(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgVal
 
     let (obj, vm) = obj_guard.into_parts();
     obj.drop_with_heap(vm);
-    allocate_string(output, vm.heap)
+    allocate_string(output, &vm.heap)
 }
 
 /// Parses the `indent=` value for `json.dumps()`.
@@ -254,13 +254,10 @@ fn parse_indent_value(value: Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -
         Value::Int(count) => spaces_from_indent_count(*count),
         Value::InternString(string_id) => Ok(Some(vm.interns.get_str(*string_id).to_owned())),
         Value::Ref(heap_id) => match vm.heap.read(*heap_id) {
-            HeapReadOutput::Str(string) => Ok(Some(string.get(vm.heap).as_str().to_owned())),
-            HeapReadOutput::LongInt(long_int) => spaces_from_indent_count(
-                long_int
-                    .get(vm.heap)
-                    .to_i64()
-                    .ok_or_else(ExcType::overflow_shift_count)?,
-            ),
+            HeapReadOutput::Str(string) => Ok(Some(string.get(vm).as_str().to_owned())),
+            HeapReadOutput::LongInt(long_int) => {
+                spaces_from_indent_count(long_int.get(vm).to_i64().ok_or_else(ExcType::overflow_shift_count)?)
+            }
             _ => Err(ExcType::type_error("indent must be None, an integer or a string")),
         },
         _ => Err(ExcType::type_error("indent must be None, an integer or a string")),
@@ -300,7 +297,7 @@ fn parse_separators_value(
     let pair = match value {
         Value::Ref(heap_id) => match vm.heap.read(*heap_id) {
             HeapReadOutput::Tuple(tuple) => {
-                let items = tuple.get(vm.heap).as_slice();
+                let items = tuple.get(vm).as_slice();
                 check_separators_length(items.len())?;
                 (
                     json_separator_to_string(&items[0], "item_separator", vm)?,
@@ -308,7 +305,7 @@ fn parse_separators_value(
                 )
             }
             HeapReadOutput::List(list) => {
-                let items = list.get(vm.heap).as_slice();
+                let items = list.get(vm).as_slice();
                 check_separators_length(items.len())?;
                 (
                     json_separator_to_string(&items[0], "item_separator", vm)?,
@@ -415,17 +412,17 @@ fn serialize_value(
         }
         Value::Ref(heap_id) => match vm.heap.read(*heap_id) {
             HeapReadOutput::Str(string) => {
-                write_json_string(string.get(vm.heap).as_str(), out, config.ensure_ascii());
+                write_json_string(string.get(vm).as_str(), out, config.ensure_ascii());
                 Ok(())
             }
             HeapReadOutput::LongInt(long_int) => {
-                long_int.get(vm.heap).check_str_digits_limit()?;
-                write!(out, "{}", long_int.get(vm.heap).inner()).expect("writing to String cannot fail");
+                long_int.get(vm).check_str_digits_limit()?;
+                write!(out, "{}", long_int.get(vm).inner()).expect("writing to String cannot fail");
                 Ok(())
             }
             HeapReadOutput::List(list) => {
                 let items: Vec<Value> = list
-                    .get(vm.heap)
+                    .get(vm)
                     .as_slice()
                     .iter()
                     .map(|value| value.clone_with_heap(vm))
@@ -438,7 +435,7 @@ fn serialize_value(
             }
             HeapReadOutput::Tuple(tuple) => {
                 let items: Vec<Value> = tuple
-                    .get(vm.heap)
+                    .get(vm)
                     .as_slice()
                     .iter()
                     .map(|value| value.clone_with_heap(vm))
@@ -451,7 +448,7 @@ fn serialize_value(
             }
             HeapReadOutput::Dict(dict) => {
                 let entries: Vec<(Value, Value)> = dict
-                    .get(vm.heap)
+                    .get(vm)
                     .iter()
                     .map(|(key, value)| (key.clone_with_heap(vm), value.clone_with_heap(vm)))
                     .collect();

@@ -95,10 +95,10 @@ pub(super) fn call(
 /// - `key` is not a string
 fn getenv(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<CallResult> {
     // getenv(key, default=None) - accepts 1 or 2 positional arguments
-    let (key, default) = args.get_one_two_args("os.getenv", vm.heap)?;
+    let (key, default) = args.get_one_two_args("os.getenv", &mut vm.heap)?;
 
     // Validate key is a string
-    if key.is_str(vm.heap) {
+    if key.is_str(&vm.heap) {
         // Build args to pass to host: (key, default)
         // The default is Value::None if not provided
         let final_default = default.unwrap_or(Value::None);

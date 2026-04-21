@@ -16,7 +16,7 @@ use crate::{
 ///
 /// Checks if an object is an instance of a class or a tuple of classes.
 pub fn builtin_isinstance(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let (obj, classinfo) = args.get_two_args("isinstance", vm.heap)?;
+    let (obj, classinfo) = args.get_two_args("isinstance", &mut vm.heap)?;
     defer_drop!(obj, vm);
     defer_drop!(classinfo, vm);
     let obj_type = obj.py_type(vm);

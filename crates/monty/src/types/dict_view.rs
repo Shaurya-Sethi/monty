@@ -86,7 +86,7 @@ impl DictKeysView {
         };
         dict_keys_eq_set_like(
             &dict,
-            other.get(vm.heap).len(),
+            other.get(vm).len(),
             |key, vm| matches!(other.contains(key, vm), Ok(true)),
             vm,
         )
@@ -103,7 +103,7 @@ impl DictKeysView {
         };
         dict_keys_eq_set_like(
             &dict,
-            other.get(vm.heap).len(),
+            other.get(vm).len(),
             |key, vm| matches!(other.contains(key, vm), Ok(true)),
             vm,
         )
@@ -119,10 +119,10 @@ impl DictKeysView {
             panic!("dict_keys view must always reference a dict");
         };
 
-        let len = dict.get(vm.heap).len();
+        let len = dict.get(vm).len();
         let mut result = Set::with_capacity(len);
         for i in 0..len {
-            let key = dict.get(vm.heap).key_at(i).unwrap().clone_with_heap(vm);
+            let key = dict.get(vm).key_at(i).unwrap().clone_with_heap(vm);
             result.add(key, vm)?;
         }
         Ok(result)
@@ -154,11 +154,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictKeysView> {
     }
 
     fn py_len(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
-        Some(self.get(vm.heap).dict(vm.heap).len())
+        Some(self.get(vm).dict(&vm.heap).len())
     }
 
     fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
-        self.get(vm.heap).eq_view(*other.get(vm.heap), vm)
+        self.get(vm).eq_view(*other.get(vm), vm)
     }
 
     fn py_repr_fmt(
@@ -168,7 +168,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictKeysView> {
         heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
         f.write_str("dict_keys([")?;
-        write_dict_keys_contents(f, self.get(vm.heap).dict(vm.heap), vm, heap_ids)?;
+        write_dict_keys_contents(f, self.get(vm).dict(&vm.heap), vm, heap_ids)?;
         Ok(f.write_str("])")?)
     }
 
@@ -179,10 +179,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictKeysView> {
         attr: &EitherStr,
         args: ArgValues,
     ) -> RunResult<CallResult> {
-        let view = *self.get(vm.heap);
+        let view = *self.get(vm);
         match attr.static_string() {
             Some(StaticStrings::Isdisjoint) => {
-                let other = args.get_one_arg("dict_keys.isdisjoint", vm.heap)?;
+                let other = args.get_one_arg("dict_keys.isdisjoint", &mut vm.heap)?;
                 defer_drop!(other, vm);
                 Ok(CallResult::Value(Value::Bool(view.isdisjoint_from_value(other, vm)?)))
             }
@@ -250,7 +250,7 @@ impl DictItemsView {
         };
         dict_items_eq_set_like(
             &dict,
-            other.get(vm.heap).len(),
+            other.get(vm).len(),
             |item, vm| matches!(other.contains(item, vm), Ok(true)),
             vm,
         )
@@ -267,7 +267,7 @@ impl DictItemsView {
         };
         dict_items_eq_set_like(
             &dict,
-            other.get(vm.heap).len(),
+            other.get(vm).len(),
             |item, vm| matches!(other.contains(item, vm), Ok(true)),
             vm,
         )
@@ -282,11 +282,11 @@ impl DictItemsView {
             panic!("dict_items view must always reference a dict");
         };
 
-        let len = dict.get(vm.heap).len();
+        let len = dict.get(vm).len();
         let mut result = Set::with_capacity(len);
         for i in 0..len {
-            let (key, value) = dict.get(vm.heap).item_at(i).unwrap();
-            let item = allocate_tuple(smallvec![key.clone_with_heap(vm), value.clone_with_heap(vm)], vm.heap)?;
+            let (key, value) = dict.get(vm).item_at(i).unwrap();
+            let item = allocate_tuple(smallvec![key.clone_with_heap(vm), value.clone_with_heap(vm)], &vm.heap)?;
             result.add(item, vm)?;
         }
         Ok(result)
@@ -318,11 +318,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictItemsView> {
     }
 
     fn py_len(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
-        Some(self.get(vm.heap).dict(vm.heap).len())
+        Some(self.get(vm).dict(&vm.heap).len())
     }
 
     fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
-        self.get(vm.heap).eq_view(*other.get(vm.heap), vm)
+        self.get(vm).eq_view(*other.get(vm), vm)
     }
 
     fn py_repr_fmt(
@@ -332,7 +332,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictItemsView> {
         heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
         f.write_str("dict_items([")?;
-        write_dict_items_contents(f, self.get(vm.heap).dict(vm.heap), vm, heap_ids)?;
+        write_dict_items_contents(f, self.get(vm).dict(&vm.heap), vm, heap_ids)?;
         Ok(f.write_str("])")?)
     }
 
@@ -343,10 +343,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictItemsView> {
         attr: &EitherStr,
         args: ArgValues,
     ) -> RunResult<CallResult> {
-        let view = *self.get(vm.heap);
+        let view = *self.get(vm);
         match attr.static_string() {
             Some(StaticStrings::Isdisjoint) => {
-                let other = args.get_one_arg("dict_items.isdisjoint", vm.heap)?;
+                let other = args.get_one_arg("dict_items.isdisjoint", &mut vm.heap)?;
                 defer_drop!(other, vm);
                 Ok(CallResult::Value(Value::Bool(view.isdisjoint_from_value(other, vm)?)))
             }
@@ -401,7 +401,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictValuesView> {
     }
 
     fn py_len(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
-        Some(self.get(vm.heap).dict(vm.heap).len())
+        Some(self.get(vm).dict(&vm.heap).len())
     }
 
     fn py_eq(&self, _other: &Self, _vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
@@ -415,7 +415,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DictValuesView> {
         heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
         f.write_str("dict_values([")?;
-        write_dict_values_contents(f, self.get(vm.heap).dict(vm.heap), vm, heap_ids)?;
+        write_dict_values_contents(f, self.get(vm).dict(&vm.heap), vm, heap_ids)?;
         Ok(f.write_str("])")?)
     }
 }
@@ -438,7 +438,7 @@ fn dict_keys_eq_dict<'h>(
 ) -> Result<bool, ResourceError> {
     dict_keys_eq_set_like(
         left,
-        right.get(vm.heap).len(),
+        right.get(vm).len(),
         |key, vm| matches!(right.contains_key(key, vm), Ok(true)),
         vm,
     )
@@ -451,16 +451,16 @@ fn dict_keys_eq_set_like<'h, T: ResourceTracker>(
     mut contains: impl FnMut(&Value, &mut VM<'h, '_, T>) -> bool,
     vm: &mut VM<'h, '_, T>,
 ) -> Result<bool, ResourceError> {
-    if dict.get(vm.heap).len() != other_len {
+    if dict.get(vm).len() != other_len {
         return Ok(false);
     }
 
     let token = vm.heap.incr_recursion_depth()?;
     defer_drop!(token, vm);
-    let len = dict.get(vm.heap).len();
+    let len = dict.get(vm).len();
     for i in 0..len {
         vm.heap.check_time()?;
-        let key = dict.get(vm.heap).key_at(i).unwrap().clone_with_heap(vm);
+        let key = dict.get(vm).key_at(i).unwrap().clone_with_heap(vm);
         defer_drop!(key, vm);
         if !contains(key, vm) {
             return Ok(false);
@@ -476,17 +476,17 @@ fn dict_items_eq_set_like<'h, T: ResourceTracker>(
     mut contains: impl FnMut(&Value, &mut VM<'h, '_, T>) -> bool,
     vm: &mut VM<'h, '_, T>,
 ) -> Result<bool, ResourceError> {
-    if dict.get(vm.heap).len() != other_len {
+    if dict.get(vm).len() != other_len {
         return Ok(false);
     }
 
     let token = vm.heap.incr_recursion_depth()?;
     defer_drop!(token, vm);
-    let len = dict.get(vm.heap).len();
+    let len = dict.get(vm).len();
     for i in 0..len {
         vm.heap.check_time()?;
-        let (key, value) = dict.get(vm.heap).item_at(i).unwrap();
-        let item = allocate_tuple(smallvec![key.clone_with_heap(vm), value.clone_with_heap(vm)], vm.heap)?;
+        let (key, value) = dict.get(vm).item_at(i).unwrap();
+        let item = allocate_tuple(smallvec![key.clone_with_heap(vm), value.clone_with_heap(vm)], &vm.heap)?;
         defer_drop!(item, vm);
         if !contains(item, vm) {
             return Ok(false);
@@ -580,7 +580,7 @@ pub(crate) fn collect_iterable_to_set(
     let (value, vm) = value_guard.into_parts();
     let iter = MontyIter::new(value, vm)?;
     defer_drop_mut!(iter, vm);
-    let mut set_guard = HeapGuard::new(Set::with_capacity(iter.size_hint(vm.heap)), vm);
+    let mut set_guard = HeapGuard::new(Set::with_capacity(iter.size_hint(&vm.heap)), vm);
     let (set, vm) = set_guard.as_parts_mut();
     while let Some(item) = iter.for_next(vm)? {
         set.add(item, vm)?;

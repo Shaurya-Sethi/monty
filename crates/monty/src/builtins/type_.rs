@@ -10,7 +10,7 @@ use crate::{
 ///
 /// Returns the type of an object.
 pub fn builtin_type(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("type", vm.heap)?;
+    let value = args.get_one_arg("type", &mut vm.heap)?;
     defer_drop!(value, vm);
     Ok(Value::Builtin(Builtins::Type(value.py_type(vm))))
 }

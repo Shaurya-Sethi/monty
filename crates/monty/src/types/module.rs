@@ -84,9 +84,9 @@ impl<'h> HeapRead<'h, Module> {
     /// the Property itself - this implements Python's descriptor protocol.
     pub fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Option<CallResult> {
         let value = self
-            .get(vm.heap)
+            .get(vm)
             .attrs
-            .get_by_str(attr.as_str(vm.interns), vm.heap, vm.interns)?;
+            .get_by_str(attr.as_str(vm.interns), &vm.heap, vm.interns)?;
 
         // If the value is a Property, invoke its getter to compute the actual value
         if let Value::Property(prop) = *value {
@@ -117,13 +117,13 @@ impl<'h> HeapRead<'h, Module> {
             EitherStr::Interned(id) => vm.interns.get_str(*id),
             EitherStr::Heap(s) => {
                 return Err(ExcType::attribute_error_module(
-                    vm.interns.get_str(self.get(vm.heap).name),
+                    vm.interns.get_str(self.get(vm).name),
                     s,
                 ));
             }
         };
 
-        match self.get(vm.heap).attrs().get_by_str(attr_str, vm.heap, vm.interns) {
+        match self.get(vm).attrs().get_by_str(attr_str, &vm.heap, vm.interns) {
             Some(value) => {
                 let value = value.clone_with_heap(vm);
                 let (args, vm) = args_guard.into_parts();
@@ -131,7 +131,7 @@ impl<'h> HeapRead<'h, Module> {
                 vm.call_function(value, args)
             }
             None => Err(ExcType::attribute_error_module(
-                vm.interns.get_str(self.get(vm.heap).name),
+                vm.interns.get_str(self.get(vm).name),
                 attr.as_str(vm.interns),
             )),
         }

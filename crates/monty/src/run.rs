@@ -429,7 +429,7 @@ impl Executor {
 
             // Drop globals with proper ref counting
             for value in globals {
-                value.drop_with_heap(vm.heap);
+                value.drop_with_heap(&mut vm);
             }
 
             let allocations_since_gc = vm.heap.get_allocations_since_gc();

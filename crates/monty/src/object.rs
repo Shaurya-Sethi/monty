@@ -377,7 +377,7 @@ impl MontyObject {
             Self::None => Ok(Value::None),
             Self::Bool(b) => Ok(Value::Bool(b)),
             Self::Int(i) => Ok(Value::Int(i)),
-            Self::BigInt(bi) => Ok(LongInt::new(bi).into_value(vm.heap)?),
+            Self::BigInt(bi) => Ok(LongInt::new(bi).into_value(&vm.heap)?),
             Self::Float(f) => Ok(Value::Float(f)),
             Self::String(s) => Ok(Value::Ref(vm.heap.allocate(HeapData::Str(Str::new(s)))?)),
             Self::Bytes(b) => Ok(Value::Ref(vm.heap.allocate(HeapData::Bytes(Bytes::new(b)))?)),
@@ -393,7 +393,7 @@ impl MontyObject {
                     .into_iter()
                     .map(|item| item.to_value(vm))
                     .collect::<Result<_, _>>()?;
-                allocate_tuple(values, vm.heap).map_err(InvalidInputError::Resource)
+                allocate_tuple(values, &vm.heap).map_err(InvalidInputError::Resource)
             }
             Self::NamedTuple {
                 type_name,
@@ -471,7 +471,7 @@ impl MontyObject {
                     i32::try_from(microsecond).map_err(|_| InvalidInputError::invalid_type("datetime"))?,
                     tzinfo,
                     None,
-                    vm.heap,
+                    &mut vm.heap,
                 )
                 .map_err(|_| InvalidInputError::invalid_type("datetime"))?;
                 Ok(Value::Ref(vm.heap.allocate(HeapData::DateTime(value))?))

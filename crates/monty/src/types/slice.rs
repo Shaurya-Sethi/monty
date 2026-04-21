@@ -189,8 +189,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Slice> {
     }
 
     fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
-        let a = self.get(vm.heap);
-        let b = other.get(vm.heap);
+        let a = self.get(vm);
+        let b = other.get(vm);
         Ok(a.start == b.start && a.stop == b.stop && a.step == b.step)
     }
 
@@ -206,16 +206,16 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Slice> {
         _heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
         f.write_str("slice(")?;
-        format_option_i64(f, self.get(vm.heap).start)?;
+        format_option_i64(f, self.get(vm).start)?;
         f.write_str(", ")?;
-        format_option_i64(f, self.get(vm.heap).stop)?;
+        format_option_i64(f, self.get(vm).stop)?;
         f.write_str(", ")?;
-        format_option_i64(f, self.get(vm.heap).step)?;
+        format_option_i64(f, self.get(vm).step)?;
         Ok(f.write_char(')')?)
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
-        let this = self.get(vm.heap);
+        let this = self.get(vm);
         // Fast path: interned strings can be matched by ID without string comparison
         if let Some(ss) = attr.static_string() {
             return match ss {

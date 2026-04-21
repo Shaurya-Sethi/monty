@@ -20,7 +20,7 @@ use crate::{
 /// Returns a tuple (quotient, remainder) from integer division.
 /// Equivalent to (a // b, a % b).
 pub fn builtin_divmod(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let (a, b) = args.get_two_args("divmod", vm.heap)?;
+    let (a, b) = args.get_two_args("divmod", &mut vm.heap)?;
     let a = super::round::normalize_bool_to_int(a);
     let b = super::round::normalize_bool_to_int(b);
     defer_drop!(a, vm);
@@ -31,14 +31,14 @@ pub fn builtin_divmod(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues
             if *y == 0 {
                 Err(ExcType::divmod_by_zero())
             } else if let Some((quot, rem)) = floor_divmod(*x, *y) {
-                Ok(allocate_tuple(smallvec![Value::Int(quot), Value::Int(rem)], vm.heap)?)
+                Ok(allocate_tuple(smallvec![Value::Int(quot), Value::Int(rem)], &vm.heap)?)
             } else {
                 // Overflow - promote to BigInt
                 check_div_size(64, vm.heap.tracker())?;
                 let (quot, rem) = bigint_floor_divmod(&BigInt::from(*x), &BigInt::from(*y));
-                let quot_val = LongInt::new(quot).into_value(vm.heap)?;
-                let rem_val = LongInt::new(rem).into_value(vm.heap)?;
-                Ok(allocate_tuple(smallvec![quot_val, rem_val], vm.heap)?)
+                let quot_val = LongInt::new(quot).into_value(&vm.heap)?;
+                let rem_val = LongInt::new(rem).into_value(&vm.heap)?;
+                Ok(allocate_tuple(smallvec![quot_val, rem_val], &vm.heap)?)
             }
         }
         (Value::Int(x), Value::Ref(id)) => {
@@ -48,9 +48,9 @@ pub fn builtin_divmod(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues
                 } else {
                     let x_bi = BigInt::from(*x);
                     let (quot, rem) = bigint_floor_divmod(&x_bi, li.inner());
-                    let quot_val = LongInt::new(quot).into_value(vm.heap)?;
-                    let rem_val = LongInt::new(rem).into_value(vm.heap)?;
-                    Ok(allocate_tuple(smallvec![quot_val, rem_val], vm.heap)?)
+                    let quot_val = LongInt::new(quot).into_value(&vm.heap)?;
+                    let rem_val = LongInt::new(rem).into_value(&vm.heap)?;
+                    Ok(allocate_tuple(smallvec![quot_val, rem_val], &vm.heap)?)
                 }
             } else {
                 let a_type = a.py_type(vm);
@@ -69,9 +69,9 @@ pub fn builtin_divmod(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues
                 } else {
                     let y_bi = BigInt::from(*y);
                     let (quot, rem) = bigint_floor_divmod(li.inner(), &y_bi);
-                    let quot_val = LongInt::new(quot).into_value(vm.heap)?;
-                    let rem_val = LongInt::new(rem).into_value(vm.heap)?;
-                    Ok(allocate_tuple(smallvec![quot_val, rem_val], vm.heap)?)
+                    let quot_val = LongInt::new(quot).into_value(&vm.heap)?;
+                    let rem_val = LongInt::new(rem).into_value(&vm.heap)?;
+                    Ok(allocate_tuple(smallvec![quot_val, rem_val], &vm.heap)?)
                 }
             } else {
                 let a_type = a.py_type(vm);
@@ -100,9 +100,9 @@ pub fn builtin_divmod(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues
                     Err(ExcType::divmod_by_zero())
                 } else {
                     let (quot, rem) = bigint_floor_divmod(&x_bi, li.inner());
-                    let quot_val = LongInt::new(quot).into_value(vm.heap)?;
-                    let rem_val = LongInt::new(rem).into_value(vm.heap)?;
-                    Ok(allocate_tuple(smallvec![quot_val, rem_val], vm.heap)?)
+                    let quot_val = LongInt::new(quot).into_value(&vm.heap)?;
+                    let rem_val = LongInt::new(rem).into_value(&vm.heap)?;
+                    Ok(allocate_tuple(smallvec![quot_val, rem_val], &vm.heap)?)
                 }
             } else {
                 let a_type = a.py_type(vm);
@@ -122,7 +122,7 @@ pub fn builtin_divmod(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues
                 let rem = x - quot * y;
                 Ok(allocate_tuple(
                     smallvec![Value::Float(quot), Value::Float(rem)],
-                    vm.heap,
+                    &vm.heap,
                 )?)
             }
         }
@@ -135,7 +135,7 @@ pub fn builtin_divmod(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues
                 let rem = xf - quot * y;
                 Ok(allocate_tuple(
                     smallvec![Value::Float(quot), Value::Float(rem)],
-                    vm.heap,
+                    &vm.heap,
                 )?)
             }
         }
@@ -148,7 +148,7 @@ pub fn builtin_divmod(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues
                 let rem = x - quot * yf;
                 Ok(allocate_tuple(
                     smallvec![Value::Float(quot), Value::Float(rem)],
-                    vm.heap,
+                    &vm.heap,
                 )?)
             }
         }

@@ -289,17 +289,15 @@ impl PyTrait<'_> for Value {
             // Ref vs Ref comparison: handles LongInt, Str, and Tuple
             (Self::Ref(id1), Self::Ref(id2)) => match (vm.heap.read(*id1), vm.heap.read(*id2)) {
                 (HeapReadOutput::LongInt(a), HeapReadOutput::LongInt(b)) => {
-                    Ok(a.get(vm.heap).inner().partial_cmp(b.get(vm.heap).inner()))
+                    Ok(a.get(vm).inner().partial_cmp(b.get(vm).inner()))
                 }
                 (HeapReadOutput::Str(a), HeapReadOutput::Str(b)) => {
-                    Ok(a.get(vm.heap).as_str().partial_cmp(b.get(vm.heap).as_str()))
+                    Ok(a.get(vm).as_str().partial_cmp(b.get(vm).as_str()))
                 }
                 (HeapReadOutput::Tuple(a), HeapReadOutput::Tuple(b)) => a.py_cmp(&b, vm),
-                (HeapReadOutput::Date(a), HeapReadOutput::Date(b)) => Ok(a.get(vm.heap).partial_cmp(b.get(vm.heap))),
+                (HeapReadOutput::Date(a), HeapReadOutput::Date(b)) => Ok(a.get(vm).partial_cmp(b.get(vm))),
                 (HeapReadOutput::DateTime(a), HeapReadOutput::DateTime(b)) => a.py_cmp(&b, vm),
-                (HeapReadOutput::TimeDelta(a), HeapReadOutput::TimeDelta(b)) => {
-                    Ok(a.get(vm.heap).partial_cmp(b.get(vm.heap)))
-                }
+                (HeapReadOutput::TimeDelta(a), HeapReadOutput::TimeDelta(b)) => Ok(a.get(vm).partial_cmp(b.get(vm))),
                 _ => Ok(None),
             },
             // Interned string comparisons
@@ -427,14 +425,14 @@ impl PyTrait<'_> for Value {
                 } else {
                     // Overflow - promote to LongInt
                     let li = LongInt::from(*a) + LongInt::from(*b);
-                    li.into_value(vm.heap).map(Some)
+                    li.into_value(&vm.heap).map(Some)
                 }
             }
             // Int + LongInt
             (Self::Int(i), Self::Ref(id)) | (Self::Ref(id), Self::Int(i)) => {
                 if let HeapData::LongInt(li) = vm.heap.get(*id) {
                     let result = LongInt::new(li.inner() + i);
-                    result.into_value(vm.heap).map(Some)
+                    result.into_value(&vm.heap).map(Some)
                 } else {
                     Ok(None)
                 }
@@ -513,14 +511,14 @@ impl PyTrait<'_> for Value {
                 } else {
                     // Overflow - promote to LongInt
                     let li = LongInt::from(*a) - LongInt::from(*b);
-                    li.into_value(vm.heap).map(Some)
+                    li.into_value(&vm.heap).map(Some)
                 }
             }
             // Int - LongInt
             (Self::Int(a), Self::Ref(id)) => {
                 if let HeapData::LongInt(li) = vm.heap.get(*id) {
                     let result = LongInt::from(*a) - LongInt::new(li.inner().clone());
-                    result.into_value(vm.heap).map(Some)
+                    result.into_value(&vm.heap).map(Some)
                 } else {
                     Ok(None)
                 }
@@ -529,7 +527,7 @@ impl PyTrait<'_> for Value {
             (Self::Ref(id), Self::Int(b)) => {
                 if let HeapData::LongInt(li) = vm.heap.get(*id) {
                     let result = LongInt::new(li.inner().clone()) - LongInt::from(*b);
-                    result.into_value(vm.heap).map(Some)
+                    result.into_value(&vm.heap).map(Some)
                 } else {
                     Ok(None)
                 }
@@ -575,7 +573,7 @@ impl PyTrait<'_> for Value {
                     return Ok(None);
                 };
                 let bi = BigInt::from(*a).mod_floor(&b_clone);
-                Ok(Some(LongInt::new(bi).into_value(vm.heap)?))
+                Ok(Some(LongInt::new(bi).into_value(&vm.heap)?))
             }
             // LongInt % Int
             (Self::Ref(id), Self::Int(b)) => {
@@ -589,7 +587,7 @@ impl PyTrait<'_> for Value {
                     return Ok(None);
                 };
                 let bi = a_clone.mod_floor(&BigInt::from(*b));
-                Ok(Some(LongInt::new(bi).into_value(vm.heap)?))
+                Ok(Some(LongInt::new(bi).into_value(&vm.heap)?))
             }
             // LongInt % LongInt
             (Self::Ref(id1), Self::Ref(id2)) => {
@@ -655,7 +653,7 @@ impl PyTrait<'_> for Value {
                 } else {
                     // Overflow - promote to LongInt
                     let li = LongInt::from(*v1) + LongInt::from(*v2);
-                    *self = li.into_value(vm.heap)?;
+                    *self = li.into_value(&vm.heap)?;
                 }
                 Ok(true)
             }
@@ -716,7 +714,7 @@ impl PyTrait<'_> for Value {
                 } else {
                     // Overflow - promote to LongInt
                     let li = LongInt::from(*a) * LongInt::from(*b);
-                    Ok(Some(li.into_value(vm.heap)?))
+                    Ok(Some(li.into_value(&vm.heap)?))
                 }
             }
             // Int * Ref (LongInt or sequence)
@@ -950,7 +948,7 @@ impl PyTrait<'_> for Value {
                 if let Self::Ref(id) = self
                     && matches!(vm.heap.get(*id), HeapData::Path(_))
                 {
-                    return path::path_div(*id, other, vm.heap, interns);
+                    return path::path_div(*id, other, &vm.heap, interns);
                 }
                 Ok(None)
             }
@@ -969,7 +967,7 @@ impl PyTrait<'_> for Value {
                     // Overflow - promote to LongInt
                     check_div_size(i64_bits(*a), vm.heap.tracker())?;
                     let bi = BigInt::from(*a).div_floor(&BigInt::from(*b));
-                    Ok(Some(LongInt::new(bi).into_value(vm.heap)?))
+                    Ok(Some(LongInt::new(bi).into_value(&vm.heap)?))
                 }
             }
             // Int // LongInt
@@ -979,7 +977,7 @@ impl PyTrait<'_> for Value {
                         Err(ExcType::zero_division().into())
                     } else {
                         let bi = BigInt::from(*a).div_floor(li.inner());
-                        Ok(Some(LongInt::new(bi).into_value(vm.heap)?))
+                        Ok(Some(LongInt::new(bi).into_value(&vm.heap)?))
                     }
                 } else {
                     Ok(None)
@@ -992,7 +990,7 @@ impl PyTrait<'_> for Value {
                         Err(ExcType::zero_division().into())
                     } else {
                         let bi = li.inner().div_floor(&BigInt::from(*b));
-                        Ok(Some(LongInt::new(bi).into_value(vm.heap)?))
+                        Ok(Some(LongInt::new(bi).into_value(&vm.heap)?))
                     }
                 }
                 HeapData::TimeDelta(td) => {
@@ -1014,7 +1012,7 @@ impl PyTrait<'_> for Value {
                         Err(ExcType::zero_division().into())
                     } else {
                         let bi = li1.inner().div_floor(li2.inner());
-                        Ok(Some(LongInt::new(bi).into_value(vm.heap)?))
+                        Ok(Some(LongInt::new(bi).into_value(&vm.heap)?))
                     }
                 }
                 _ => Ok(None),
@@ -1101,7 +1099,7 @@ impl PyTrait<'_> for Value {
                             // Check size before computing to prevent DoS
                             check_pow_size(i64_bits(*base), u64::from(exp_u32), vm.heap.tracker())?;
                             let bi = BigInt::from(*base).pow(exp_u32);
-                            Ok(Some(LongInt::new(bi).into_value(vm.heap)?))
+                            Ok(Some(LongInt::new(bi).into_value(&vm.heap)?))
                         }
                     } else {
                         // exp > u32::MAX - use BigInt with modpow-style exponentiation
@@ -1112,7 +1110,7 @@ impl PyTrait<'_> for Value {
                         // Check size before computing to prevent DoS
                         check_pow_size(i64_bits(*base), exp_u64, vm.heap.tracker())?;
                         let bi = bigint_pow(BigInt::from(*base), exp_u64);
-                        Ok(Some(LongInt::new(bi).into_value(vm.heap)?))
+                        Ok(Some(LongInt::new(bi).into_value(&vm.heap)?))
                     }
                 } else {
                     // Negative exponent: return float
@@ -1135,7 +1133,7 @@ impl PyTrait<'_> for Value {
                             // Check size before computing to prevent DoS
                             check_pow_size(li.bits(), u64::from(exp_u32), vm.heap.tracker())?;
                             let bi = li.inner().pow(exp_u32);
-                            Ok(Some(LongInt::new(bi).into_value(vm.heap)?))
+                            Ok(Some(LongInt::new(bi).into_value(&vm.heap)?))
                         } else {
                             // Safety: exp >= 0 is guaranteed by the outer if condition
                             #[expect(clippy::cast_sign_loss)]
@@ -1143,7 +1141,7 @@ impl PyTrait<'_> for Value {
                             // Check size before computing to prevent DoS
                             check_pow_size(li.bits(), exp_u64, vm.heap.tracker())?;
                             let bi = bigint_pow(li.inner().clone(), exp_u64);
-                            Ok(Some(LongInt::new(bi).into_value(vm.heap)?))
+                            Ok(Some(LongInt::new(bi).into_value(&vm.heap)?))
                         }
                     } else {
                         // Negative exponent: return float (LongInt base becomes 0.0 for large values)
@@ -1188,7 +1186,7 @@ impl PyTrait<'_> for Value {
                                 // Check size before computing to prevent DoS
                                 check_pow_size(i64_bits(*base), u64::from(exp_u32), vm.heap.tracker())?;
                                 let bi = BigInt::from(*base).pow(exp_u32);
-                                Ok(Some(LongInt::new(bi).into_value(vm.heap)?))
+                                Ok(Some(LongInt::new(bi).into_value(&vm.heap)?))
                             }
                         } else {
                             // Exponent too large - result would be astronomically large
@@ -1322,7 +1320,7 @@ impl PyTrait<'_> for Value {
 
                 let s = interns.get_str(*string_id);
                 let c = get_char_at_index(s, index).ok_or_else(ExcType::str_index_error)?;
-                Ok(allocate_char(c, vm.heap)?)
+                Ok(allocate_char(c, &vm.heap)?)
             }
             Self::InternBytes(bytes_id) => {
                 // Check for slice first
@@ -1551,7 +1549,7 @@ impl Value {
                 let output = vm.heap.read(*heap_id);
                 match output {
                     HeapReadOutput::List(list) => {
-                        let len = list.get(vm.heap).len();
+                        let len = list.get(vm).len();
                         for i in 0..len {
                             let el = list.clone_item(i, vm);
                             let eq = item.py_eq(&el, vm);
@@ -1563,7 +1561,7 @@ impl Value {
                         Ok(false)
                     }
                     HeapReadOutput::Tuple(tuple) => {
-                        let len = tuple.get(vm.heap).as_slice().len();
+                        let len = tuple.get(vm).as_slice().len();
                         for i in 0..len {
                             let el = tuple.clone_item(i, vm);
                             let eq = item.py_eq(&el, vm);
@@ -1576,14 +1574,14 @@ impl Value {
                     }
                     HeapReadOutput::Dict(dict) => dict.contains_key(item, vm),
                     HeapReadOutput::DictKeysView(view) => {
-                        let dict_id = view.get(vm.heap).dict_id();
+                        let dict_id = view.get(vm).dict_id();
                         let HeapReadOutput::Dict(dict) = vm.heap.read(dict_id) else {
                             panic!("dict_keys view must reference a dict");
                         };
                         dict.contains_key(item, vm)
                     }
                     HeapReadOutput::DictItemsView(view) => {
-                        let dict_id = view.get(vm.heap).dict_id();
+                        let dict_id = view.get(vm).dict_id();
                         let Some((key, value)) = cloned_items_view_candidate(item, vm) else {
                             return Ok(false);
                         };
@@ -1605,15 +1603,15 @@ impl Value {
                         }
                     }
                     HeapReadOutput::DictValuesView(view) => {
-                        let dict_id = view.get(vm.heap).dict_id();
+                        let dict_id = view.get(vm).dict_id();
                         let HeapReadOutput::Dict(dict) = vm.heap.read(dict_id) else {
                             panic!("dict_values view must reference a dict");
                         };
                         // Iterate by index, cloning each value for py_eq comparison
-                        let len = dict.get(vm.heap).len();
+                        let len = dict.get(vm).len();
                         for i in 0..len {
                             // Two-phase clone: read ref discriminant, then inc_ref
-                            let ref_id = match dict.get(vm.heap).value_at(i) {
+                            let ref_id = match dict.get(vm).value_at(i) {
                                 Some(Self::Ref(id)) => Some(*id),
                                 _ => None,
                             };
@@ -1621,7 +1619,7 @@ impl Value {
                                 vm.heap.inc_ref(id);
                                 Self::Ref(id)
                             } else {
-                                dict.get(vm.heap).value_at(i).expect("index valid").clone_immediate()
+                                dict.get(vm).value_at(i).expect("index valid").clone_immediate()
                             };
                             let eq = item.py_eq(&el, vm);
                             el.drop_with_heap(vm);
@@ -1634,12 +1632,12 @@ impl Value {
                     HeapReadOutput::Set(set) => set.contains(item, vm),
                     HeapReadOutput::FrozenSet(fset) => fset.contains(item, vm),
                     HeapReadOutput::Str(s) => {
-                        let s_str = s.get(vm.heap).as_str();
-                        str_contains(s_str, item, vm.heap, vm.interns)
+                        let s_str = s.get(vm).as_str();
+                        str_contains(s_str, item, &vm.heap, vm.interns)
                     }
                     HeapReadOutput::Range(range) => {
                         // Range containment is O(1) - check bounds and step alignment
-                        let range = range.get(vm.heap);
+                        let range = range.get(vm);
                         let n = match item {
                             Self::Int(i) => *i,
                             Self::Bool(b) => i64::from(*b),
@@ -1669,7 +1667,7 @@ impl Value {
             }
             Self::InternString(string_id) => {
                 let container_str = vm.interns.get_str(*string_id);
-                str_contains(container_str, item, vm.heap, vm.interns)
+                str_contains(container_str, item, &vm.heap, vm.interns)
             }
             _ => {
                 let type_name = self.py_type(vm);
@@ -1825,8 +1823,8 @@ impl Value {
         let rhs_type = other.py_type(vm);
 
         // Extract BigInt from all numeric types
-        let lhs_bigint = extract_bigint(self, vm.heap);
-        let rhs_bigint = extract_bigint(other, vm.heap);
+        let lhs_bigint = extract_bigint(self, &vm.heap);
+        let rhs_bigint = extract_bigint(other, &vm.heap);
 
         if let (Some(l), Some(r)) = (lhs_bigint, rhs_bigint) {
             let result = match op {
@@ -1878,7 +1876,7 @@ impl Value {
                 }
             };
             // Convert result back to Value, demoting to i64 if it fits
-            LongInt::new(result).into_value(vm.heap).map_err(Into::into)
+            LongInt::new(result).into_value(&vm.heap).map_err(Into::into)
         } else {
             Err(ExcType::binary_type_error(op.as_str(), lhs_type, rhs_type))
         }

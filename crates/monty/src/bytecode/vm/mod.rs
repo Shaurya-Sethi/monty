@@ -27,7 +27,9 @@ use crate::{
         op::Opcode,
     },
     exception_private::{ExcType, RunError, RunResult, SimpleException},
-    heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapReadOutput, HeapReader},
+    heap::{
+        ContainsHeap, ContainsHeapReader, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapReadOutput, HeapReader,
+    },
     heap_data::{Closure, FunctionDefaults},
     intern::{FunctionId, Interns, StringId},
     io::PrintWriter,
@@ -541,7 +543,12 @@ pub struct VM<'h, 'a, T: ResourceTracker> {
     frames: Vec<CallFrame<'a>>,
 
     /// Heap for reference-counted objects.
-    pub(crate) heap: &'h mut HeapReader<'h, T>,
+    ///
+    /// Owns the `HeapReader` by value (rather than holding `&mut HeapReader`) so VM-internal
+    /// heap accesses skip a pointer-to-pointer indirection. The reader's invariant lifetime
+    /// `'h` keeps `HeapRead` handles tied to *this* VM's reader and prevents them from
+    /// escaping the surrounding `HeapReader::with` closure.
+    pub(crate) heap: HeapReader<'h, T>,
 
     /// Interned strings/bytes.
     pub(crate) interns: &'a Interns,
@@ -596,7 +603,7 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
     /// Creates a new VM with the given runtime context.
     pub fn new(
         globals: Vec<Value>,
-        heap: &'h mut HeapReader<'h, T>,
+        heap: HeapReader<'h, T>,
         interns: &'a Interns,
         print_writer: PrintWriter<'a>,
     ) -> Self {
@@ -631,7 +638,7 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
     pub fn restore(
         snapshot: VMSnapshot,
         module_code: &'a Code,
-        heap: &'h mut HeapReader<'h, T>,
+        heap: HeapReader<'h, T>,
         interns: &'a Interns,
         print_writer: PrintWriter<'a>,
     ) -> Self {
@@ -689,7 +696,7 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
     pub fn snapshot(mut self) -> VMSnapshot {
         // Drop cached JSON strings before consuming the VM — they are not
         // included in the snapshot and their refcounts must be decremented.
-        self.json_string_cache.drop_all(self.heap);
+        self.json_string_cache.drop_all(&mut self.heap);
 
         VMSnapshot {
             // Move values directly — no clone, no refcount increment needed
@@ -819,7 +826,7 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
                     // Handle InternLongInt specially - convert to heap-allocated LongInt
                     if let Value::InternLongInt(long_int_id) = value {
                         let bi = self.interns.get_long_int(*long_int_id).clone();
-                        match LongInt::new(bi).into_value(self.heap) {
+                        match LongInt::new(bi).into_value(&self.heap) {
                             Ok(v) => self.push(v),
                             Err(e) => catch_sync!(self, cached_frame, RunError::from(e)),
                         }
@@ -951,7 +958,7 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
                             } else {
                                 // i64::MIN negated overflows to LongInt
                                 let li = -LongInt::from(n);
-                                match li.into_value(self.heap) {
+                                match li.into_value(&self.heap) {
                                     Ok(v) => self.push(v),
                                     Err(e) => catch_sync!(self, cached_frame, RunError::from(e)),
                                 }
@@ -963,7 +970,7 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
                             HeapData::LongInt(li) => {
                                 let negated = -LongInt::new(li.inner().clone());
                                 value.drop_with_heap(self);
-                                match negated.into_value(self.heap) {
+                                match negated.into_value(&self.heap) {
                                     Ok(v) => self.push(v),
                                     Err(e) => catch_sync!(self, cached_frame, RunError::from(e)),
                                 }
@@ -1026,7 +1033,7 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
                                 // LongInt bitwise NOT: ~x = -(x + 1)
                                 let inverted = -(li.inner() + 1i32);
                                 value.drop_with_heap(self);
-                                match LongInt::new(inverted).into_value(self.heap) {
+                                match LongInt::new(inverted).into_value(&self.heap) {
                                     Ok(v) => self.push(v),
                                     Err(e) => catch_sync!(self, cached_frame, RunError::from(e)),
                                 }
@@ -1699,7 +1706,9 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
     /// Drains the stack with proper `drop_with_heap` for each value (since locals
     /// are inlined on the stack), then cleans up each frame's cell references.
     pub(super) fn cleanup_current_task(&mut self) {
-        self.stack.drain(..).drop_with_heap(self.heap);
+        // Pass `&mut self.heap` rather than `self` because `drain(..)` already holds
+        // a mutable borrow of `self.stack`; `&mut self.heap` is a disjoint borrow.
+        self.stack.drain(..).drop_with_heap(&mut self.heap);
         self.frames.clear();
     }
 
@@ -1947,18 +1956,28 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
         let HeapReadOutput::Cell(mut cell) = this.heap.read(cell_id) else {
             panic!("StoreCell: entry is not a Cell")
         };
-        mem::swap(&mut cell.get_mut(this.heap).0, value);
+        mem::swap(&mut cell.get_mut(&mut this.heap).0, value);
     }
 }
 
-// `heap` is not a public field on VM, so this implementation needs to go here rather than in `heap.rs`
+// `heap` is not a public field on VM, so these implementations need to go here rather than in `heap.rs`
 impl<T: ResourceTracker> ContainsHeap for VM<'_, '_, T> {
     type ResourceTracker = T;
     fn heap(&self) -> &Heap<T> {
-        self.heap
+        &self.heap
     }
     fn heap_mut(&mut self) -> &mut Heap<T> {
-        self.heap
+        &mut self.heap
+    }
+}
+
+impl<'h, T: ResourceTracker> ContainsHeapReader<'h> for VM<'h, '_, T> {
+    type ResourceTracker = T;
+    fn heap_reader(&self) -> &HeapReader<'h, T> {
+        &self.heap
+    }
+    fn heap_reader_mut(&mut self) -> &mut HeapReader<'h, T> {
+        &mut self.heap
     }
 }
 
@@ -1970,10 +1989,12 @@ impl<T: ResourceTracker> ContainsHeap for VM<'_, '_, T> {
 /// `take_globals`) are harmlessly drained as empty.
 impl<T: ResourceTracker> Drop for VM<'_, '_, T> {
     fn drop(&mut self) {
-        self.exception_stack.drain(..).drop_with_heap(self.heap);
+        // Each `drain(..)` holds a mutable borrow of its source field, so the
+        // disjoint `&mut self.heap` borrow is needed instead of passing `self`.
+        self.exception_stack.drain(..).drop_with_heap(&mut self.heap);
         self.cleanup_current_task();
-        self.scheduler.cleanup(self.heap);
-        self.globals.drain(..).drop_with_heap(self.heap);
-        self.json_string_cache.drop_all(self.heap);
+        self.scheduler.cleanup(&mut self.heap);
+        self.globals.drain(..).drop_with_heap(&mut self.heap);
+        self.json_string_cache.drop_all(&mut self.heap);
     }
 }

@@ -23,7 +23,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             result.push_str(&part_str);
         }
 
-        let value = allocate_string(result, this.heap)?;
+        let value = allocate_string(result, &this.heap)?;
         this.push(value);
         Ok(())
     }
@@ -96,7 +96,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             }
         };
 
-        let result = allocate_string(formatted, this.heap)?;
+        let result = allocate_string(formatted, &this.heap)?;
         this.push(result);
         Ok(())
     }

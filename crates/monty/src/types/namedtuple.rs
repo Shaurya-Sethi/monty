@@ -141,17 +141,17 @@ impl<'h> HeapRead<'h, NamedTuple> {
     /// Uses `index + len` instead of `-index` to avoid overflow on `i64::MIN`.
     #[must_use]
     pub fn get_by_index<'a>(&'a self, vm: &'a VM<'h, '_, impl ResourceTracker>, index: i64) -> Option<&'a Value> {
-        let len = i64::try_from(self.get(vm.heap).items.len()).ok()?;
+        let len = i64::try_from(self.get(vm).items.len()).ok()?;
         let normalized = if index < 0 { index + len } else { index };
         if normalized < 0 || normalized >= len {
             return None;
         }
-        self.get(vm.heap).items.get(usize::try_from(normalized).ok()?)
+        self.get(vm).items.get(usize::try_from(normalized).ok()?)
     }
 
     /// Clones a single item.
     pub(crate) fn clone_item(&self, index: usize, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Value {
-        self.get(vm.heap).items[index].clone_with_heap(vm)
+        self.get(vm).items[index].clone_with_heap(vm)
     }
 
     /// Cross-type equality between NamedTuple and Tuple via HeapRead.
@@ -163,8 +163,8 @@ impl<'h> HeapRead<'h, NamedTuple> {
         other: &HeapRead<'h, super::Tuple>,
         vm: &mut VM<'h, '_, impl ResourceTracker>,
     ) -> Result<bool, ResourceError> {
-        let a_len = self.get(vm.heap).len();
-        if a_len != other.get(vm.heap).as_slice().len() {
+        let a_len = self.get(vm).len();
+        if a_len != other.get(vm).as_slice().len() {
             return Ok(false);
         }
         let token = vm.heap.incr_recursion_depth()?;
@@ -192,7 +192,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
     }
 
     fn py_len(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
-        Some(self.get(vm.heap).len())
+        Some(self.get(vm).len())
     }
 
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
@@ -204,14 +204,14 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
 
         // Get by index with bounds checking
         match self.get_by_index(vm, index) {
-            Some(value) => Ok(value.clone_with_heap(vm.heap)),
+            Some(value) => Ok(value.clone_with_heap(vm)),
             None => Err(ExcType::tuple_index_error()),
         }
     }
 
     fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
-        let a_len = self.get(vm.heap).len();
-        if a_len != other.get(vm.heap).len() {
+        let a_len = self.get(vm).len();
+        if a_len != other.get(vm).len() {
             return Ok(false);
         }
         let token = vm.heap.incr_recursion_depth()?;
@@ -231,7 +231,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
     }
 
     fn py_bool(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
-        self.get(vm.heap).len() > 0
+        self.get(vm).len() > 0
     }
 
     fn py_repr_fmt(
@@ -247,10 +247,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
         };
         crate::defer_drop_immutable_heap!(token, heap);
 
-        write!(f, "{}(", self.get(vm.heap).name.as_str(vm.interns))?;
+        write!(f, "{}(", self.get(vm).name.as_str(vm.interns))?;
 
         let mut first = true;
-        for (field_name, value) in self.get(vm.heap).field_names.iter().zip(&self.get(vm.heap).items) {
+        for (field_name, value) in self.get(vm).field_names.iter().zip(&self.get(vm).items) {
             if !first {
                 f.write_str(", ")?;
             }
@@ -266,11 +266,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
         let attr_name = attr.as_str(vm.interns);
-        if let Some(value) = self.get(vm.heap).get_by_name(attr_name, vm.interns) {
-            Ok(Some(CallResult::Value(value.clone_with_heap(vm.heap))))
+        if let Some(value) = self.get(vm).get_by_name(attr_name, vm.interns) {
+            Ok(Some(CallResult::Value(value.clone_with_heap(vm))))
         } else {
             // we use name here, not `self.py_type(heap)` hence returning a Ok(None)
-            Err(ExcType::attribute_error(self.get(vm.heap).name(vm.interns), attr_name))
+            Err(ExcType::attribute_error(self.get(vm).name(vm.interns), attr_name))
         }
     }
 }

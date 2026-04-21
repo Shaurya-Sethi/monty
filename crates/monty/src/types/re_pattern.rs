@@ -276,7 +276,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, RePattern> {
     }
 
     fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
-        Ok(self.get(vm.heap) == other.get(vm.heap))
+        Ok(self.get(vm) == other.get(vm))
     }
 
     fn py_bool(&self, _vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
@@ -290,7 +290,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, RePattern> {
         vm: &VM<'h, '_, impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
-        let this = self.get(vm.heap);
+        let this = self.get(vm);
         write!(f, "re.compile(")?;
         string_repr_fmt(&this.pattern, f)?;
         if this.flags != 0 {
@@ -315,11 +315,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, RePattern> {
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
         match attr.static_string() {
             Some(StaticStrings::PatternAttr) => {
-                let s = Str::new(self.get(vm.heap).pattern.clone());
+                let s = Str::new(self.get(vm).pattern.clone());
                 let v = Value::Ref(vm.heap.allocate(HeapData::Str(s))?);
                 Ok(Some(CallResult::Value(v)))
             }
-            Some(StaticStrings::Flags) => Ok(Some(CallResult::Value(Value::Int(i64::from(self.get(vm.heap).flags))))),
+            Some(StaticStrings::Flags) => Ok(Some(CallResult::Value(Value::Int(i64::from(self.get(vm).flags))))),
             _ => Err(ExcType::attribute_error(Type::RePattern, attr.as_str(vm.interns))),
         }
     }
@@ -333,36 +333,36 @@ impl<'h> PyTrait<'h> for HeapRead<'h, RePattern> {
     ) -> RunResult<CallResult> {
         let result = match attr.static_string() {
             Some(StaticStrings::Search) => {
-                let arg = args.get_one_arg("Pattern.search", vm.heap)?;
+                let arg = args.get_one_arg("Pattern.search", &mut vm.heap)?;
                 defer_drop!(arg, vm);
                 let text = value_to_str(arg, vm)?.into_owned();
-                self.get(vm.heap).search(&text, vm.heap)
+                self.get(vm).search(&text, &vm.heap)
             }
             Some(StaticStrings::Match) => {
-                let arg = args.get_one_arg("Pattern.match", vm.heap)?;
+                let arg = args.get_one_arg("Pattern.match", &mut vm.heap)?;
                 defer_drop!(arg, vm);
                 let text = value_to_str(arg, vm)?.into_owned();
-                self.get(vm.heap).match_start(&text, vm.heap)
+                self.get(vm).match_start(&text, &vm.heap)
             }
             Some(StaticStrings::Fullmatch) => {
-                let arg = args.get_one_arg("Pattern.fullmatch", vm.heap)?;
+                let arg = args.get_one_arg("Pattern.fullmatch", &mut vm.heap)?;
                 defer_drop!(arg, vm);
                 let text = value_to_str(arg, vm)?.into_owned();
-                self.get(vm.heap).fullmatch(&text, vm.heap)
+                self.get(vm).fullmatch(&text, &vm.heap)
             }
             Some(StaticStrings::Findall) => {
-                let arg = args.get_one_arg("Pattern.findall", vm.heap)?;
+                let arg = args.get_one_arg("Pattern.findall", &mut vm.heap)?;
                 defer_drop!(arg, vm);
                 let text = value_to_str(arg, vm)?.into_owned();
-                self.get(vm.heap).findall(&text, vm.heap)
+                self.get(vm).findall(&text, &vm.heap)
             }
             Some(StaticStrings::Sub) => call_pattern_sub(self, args, vm),
             Some(StaticStrings::Split) => call_pattern_split(self, args, vm),
             Some(StaticStrings::Finditer) => {
-                let arg = args.get_one_arg("Pattern.finditer", vm.heap)?;
+                let arg = args.get_one_arg("Pattern.finditer", &mut vm.heap)?;
                 defer_drop!(arg, vm);
                 let text = value_to_str(arg, vm)?.into_owned();
-                self.get(vm.heap).finditer(&text, vm.heap)
+                self.get(vm).finditer(&text, &vm.heap)
             }
             _ => return Err(ExcType::attribute_error(Type::RePattern, attr.as_str(vm.interns))),
         }?;
@@ -418,7 +418,7 @@ fn call_pattern_sub<'h>(
     let mut kw_count: Option<Value> = None;
     for (key, value) in kwargs {
         defer_drop!(key, vm);
-        let Some(keyword_name) = key.as_either_str(vm.heap) else {
+        let Some(keyword_name) = key.as_either_str(&vm.heap) else {
             value.drop_with_heap(vm);
             return Err(ExcType::type_error("keywords must be strings"));
         };
@@ -463,14 +463,14 @@ fn call_pattern_sub<'h>(
     };
 
     // Check that repl is a string — callable replacement is not supported
-    if !repl_val.is_str(vm.heap) {
+    if !repl_val.is_str(&vm.heap) {
         return Err(ExcType::type_error(
             "callable replacement is not yet supported in re.sub()",
         ));
     }
     let repl = value_to_str(repl_val, vm)?.into_owned();
     let text = value_to_str(string_val, vm)?.into_owned();
-    pattern.get(vm.heap).sub(&repl, &text, count, vm.heap)
+    pattern.get(vm).sub(&repl, &text, count, &vm.heap)
 }
 
 /// Handles `pattern.split(string, maxsplit=0)` argument extraction and dispatch.
@@ -505,7 +505,7 @@ fn call_pattern_split<'h>(
     let mut kw_maxsplit: Option<Value> = None;
     for (key, value) in kwargs {
         defer_drop!(key, vm);
-        let Some(keyword_name) = key.as_either_str(vm.heap) else {
+        let Some(keyword_name) = key.as_either_str(&vm.heap) else {
             value.drop_with_heap(vm);
             return Err(ExcType::type_error("keywords must be strings"));
         };
@@ -528,7 +528,7 @@ fn call_pattern_split<'h>(
 
     let maxsplit = extract_maxsplit(pos_maxsplit.or(kw_maxsplit), vm)?;
     let text = value_to_str(string_val, vm)?.into_owned();
-    pattern.get(vm.heap).split(&text, maxsplit, vm.heap)
+    pattern.get(vm).split(&text, maxsplit, &vm.heap)
 }
 
 /// Extracts a `maxsplit` value from an optional `Value`.

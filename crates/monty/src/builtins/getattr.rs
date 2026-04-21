@@ -28,7 +28,7 @@ use crate::{
 /// getattr(module, 'function')   # Get module.function
 /// ```
 pub fn builtin_getattr(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let positional = args.into_pos_only("getattr", vm.heap)?;
+    let positional = args.into_pos_only("getattr", &mut vm.heap)?;
     defer_drop!(positional, vm);
 
     let (object, name, default) = match positional.as_slice() {
@@ -38,7 +38,7 @@ pub fn builtin_getattr(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValue
         too_many => return Err(ExcType::type_error_at_most("getattr", 3, too_many.len())),
     };
 
-    let Some(attr) = name.as_either_str(vm.heap) else {
+    let Some(attr) = name.as_either_str(&vm.heap) else {
         let ty = name.py_type(vm);
         return Err(
             SimpleException::new_msg(ExcType::TypeError, format!("attribute name must be string, not '{ty}'")).into(),

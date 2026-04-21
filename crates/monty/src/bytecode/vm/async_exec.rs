@@ -78,23 +78,23 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         };
 
         // Check if coroutine can be awaited (must be New)
-        if coro.get(this.heap).state != CoroutineState::New {
+        if coro.get(&this.heap).state != CoroutineState::New {
             return Err(
                 SimpleException::new_msg(ExcType::RuntimeError, "cannot reuse already awaited coroutine").into(),
             );
         }
 
         // Extract coroutine data before mutating
-        let func_id = coro.get(this.heap).func_id;
+        let func_id = coro.get(&this.heap).func_id;
         let namespace_values: Vec<Value> = coro
-            .get(this.heap)
+            .get(&this.heap)
             .namespace
             .iter()
             .map(|v| v.clone_with_heap(this))
             .collect();
 
         // Mark coroutine as Running
-        coro.get_mut(this.heap).state = CoroutineState::Running;
+        coro.get_mut(&mut this.heap).state = CoroutineState::Running;
 
         // Create namespace and push frame (guard drops awaitable at scope exit)
         this.start_coroutine_frame(func_id, namespace_values)?;
@@ -120,12 +120,12 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         };
 
         // Check if already being waited on (double-await)
-        if gather.get(this.heap).waiter.is_some() {
+        if gather.get(&this.heap).waiter.is_some() {
             return Err(SimpleException::new_msg(ExcType::RuntimeError, "cannot reuse already awaited gather").into());
         }
 
         // If no items to gather, return empty list immediately
-        if gather.get(this.heap).item_count() == 0 {
+        if gather.get(&this.heap).item_count() == 0 {
             let list_id = this.heap.allocate(HeapData::List(List::new(vec![])))?;
             return Ok(AwaitResult::ValueReady(Value::Ref(list_id)));
         }
@@ -134,7 +134,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         // Note: We clone instead of mem::take because GatherItem::Coroutine holds HeapIds
         // that need to stay in gather.items for proper ref counting when the gather is dropped.
         let current_task = this.scheduler.current_task_id();
-        let gather_mut = gather.get_mut(this.heap);
+        let gather_mut = gather.get_mut(&mut this.heap);
         gather_mut.waiter = current_task;
 
         // Process each item
@@ -310,11 +310,11 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             let HeapReadOutput::Coroutine(mut coro) = self.heap.read(coro_id) else {
                 panic!("task coroutine_id doesn't point to a Coroutine")
             };
-            coro.get_mut(self.heap).state = CoroutineState::Completed;
+            coro.get_mut(self).state = CoroutineState::Completed;
         }
 
         // Mark task as completed and store result in task state
-        let task_result = result.clone_with_heap(self.heap);
+        let task_result = result.clone_with_heap(self);
         self.scheduler.complete_task(task_id, task_result);
 
         // If task belongs to a gather, store result and check if gather is complete
@@ -325,25 +325,25 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
             // Store result in gather.results at the correct index
             if let Some(idx) = gather_result_idx {
-                gather.get_mut(self.heap).results[idx] = Some(result);
+                gather.get_mut(self).results[idx] = Some(result);
             } else {
-                result.drop_with_heap(self.heap);
+                result.drop_with_heap(self);
             }
 
             // Check if all tasks are complete AND all external futures are resolved
-            let all_tasks_complete = gather.get(self.heap).task_ids.iter().all(|tid| {
+            let all_tasks_complete = gather.get(self).task_ids.iter().all(|tid| {
                 matches!(
                     self.scheduler.get_task(*tid).state,
                     TaskState::Completed(_) | TaskState::Failed(_)
                 )
             });
-            let all_external_resolved = gather.get(self.heap).pending_calls.is_empty();
+            let all_external_resolved = gather.get(self).pending_calls.is_empty();
             let all_complete = all_tasks_complete && all_external_resolved;
 
             if all_complete {
                 // First check if any task failed
                 let failed_task = gather
-                    .get(self.heap)
+                    .get(self)
                     .task_ids
                     .iter()
                     .find(|tid| matches!(self.scheduler.get_task(**tid).state, TaskState::Failed(_)));
@@ -355,7 +355,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                         self.heap.dec_ref(gid);
 
                         // Switch to waiter so error is raised in its context
-                        if let Some(waiter_id) = gather.get(self.heap).waiter {
+                        if let Some(waiter_id) = gather.get(self).waiter {
                             self.cleanup_current_task();
                             self.scheduler.set_current_task(Some(waiter_id));
                             self.load_or_init_task(waiter_id)?;
@@ -368,7 +368,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 // Steal results from gather using mem::take - avoids refcount dance
                 // (copy + inc_ref + dec_ref on gather drop). Since gather is being
                 // destroyed, we can take ownership of the values directly.
-                let results: Vec<Value> = mem::take(&mut gather.get_mut(self.heap).results)
+                let results: Vec<Value> = mem::take(&mut gather.get_mut(self).results)
                     .into_iter()
                     .map(|r| r.expect("all results should be filled when gather is complete"))
                     .collect();
@@ -377,7 +377,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 let list_id = self.heap.allocate(HeapData::List(List::new(results)))?;
 
                 // Release the GatherFuture - this will cascade to release coroutines
-                let waiter = gather.get(self.heap).waiter;
+                let waiter = gather.get(self).waiter;
                 drop(gather);
                 self.heap.dec_ref(gid);
 
@@ -401,7 +401,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             }
         } else {
             // Drop the result (it's stored in the task state now)
-            result.drop_with_heap(self.heap);
+            result.drop_with_heap(self);
         }
 
         // Gather not complete or no gather - switch to next task
@@ -457,7 +457,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             let HeapReadOutput::GatherFuture(mut gather) = self.heap.read(gid) else {
                 panic!("task gather_id doesn't point to a GatherFuture")
             };
-            let gather_mut = gather.get_mut(self.heap);
+            let gather_mut = gather.get_mut(self);
             let task_ids = mem::take(&mut gather_mut.task_ids);
             let waiter = gather_mut.waiter;
             // Drop the HeapRead before operations that may free heap objects
@@ -469,7 +469,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             // Cancel sibling tasks (filter out self and already-finished tasks inline)
             for sibling_id in task_ids {
                 if sibling_id != task_id && !self.scheduler.get_task(sibling_id).is_finished() {
-                    self.scheduler.cancel_task(sibling_id, self.heap);
+                    self.scheduler.cancel_task(sibling_id, &mut self.heap);
                 }
             }
 
@@ -613,23 +613,23 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         };
 
         // Check state
-        if coro.get(self.heap).state != CoroutineState::New {
+        if coro.get(self).state != CoroutineState::New {
             return Err(
                 SimpleException::new_msg(ExcType::RuntimeError, "cannot reuse already awaited coroutine").into(),
             );
         }
 
         // Extract coroutine data
-        let func_id = coro.get(self.heap).func_id;
+        let func_id = coro.get(self).func_id;
         let namespace_values: Vec<Value> = coro
-            .get(self.heap)
+            .get(self)
             .namespace
             .iter()
             .map(|v| v.clone_with_heap(self))
             .collect();
 
         // Mark coroutine as Running
-        coro.get_mut(self.heap).state = CoroutineState::Running;
+        coro.get_mut(self).state = CoroutineState::Running;
 
         // Push locals onto stack and push frame directly (can't use start_coroutine_frame
         // because that needs a current frame for call_position, but spawned tasks
@@ -682,7 +682,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             let HeapReadOutput::GatherFuture(mut gather) = self.heap.read(gather_id) else {
                 panic!("gather_id doesn't point to a GatherFuture")
             };
-            let gather_mut = gather.get_mut(self.heap);
+            let gather_mut = gather.get_mut(self);
             gather_mut.results[result_idx] = Some(value); // Move value directly, no clone needed
             // Remove from pending_calls
             gather_mut.pending_calls.retain(|&cid| cid != call_id);
@@ -690,7 +690,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
             // Check if gather is now complete (all external futures resolved and all tasks complete)
             if pending_empty {
-                let all_tasks_complete = gather.get(self.heap).task_ids.iter().all(|tid| {
+                let all_tasks_complete = gather.get(self).task_ids.iter().all(|tid| {
                     matches!(
                         self.scheduler.get_task(*tid).state,
                         TaskState::Completed(_) | TaskState::Failed(_)
@@ -698,11 +698,11 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 });
                 if all_tasks_complete {
                     // Gather is complete - build result and push to waiter's stack
-                    let waiter = gather.get(self.heap).waiter;
+                    let waiter = gather.get(self).waiter;
                     // Steal results from gather using mem::take - avoids refcount dance
                     // (copy + inc_ref + dec_ref on gather drop). Since gather is being
                     // destroyed, we can take ownership of the values directly.
-                    let results: Vec<Value> = mem::take(&mut gather.get_mut(self.heap).results)
+                    let results: Vec<Value> = mem::take(&mut gather.get_mut(self).results)
                         .into_iter()
                         .map(|r| r.expect("all results should be filled when gather is complete"))
                         .collect();
@@ -766,7 +766,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             let HeapReadOutput::GatherFuture(mut gather) = self.heap.read(gather_id) else {
                 panic!("gather_id doesn't point to a GatherFuture")
             };
-            let gather_mut = gather.get_mut(self.heap);
+            let gather_mut = gather.get_mut(self);
             let mut other_pending_calls = mem::take(&mut gather_mut.pending_calls);
             other_pending_calls.retain(|&cid| cid != call_id);
             let waiter = gather_mut.waiter;
@@ -783,7 +783,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
             // Cancel all sibling tasks in the gather
             for sibling_id in task_ids {
-                self.scheduler.cancel_task(sibling_id, self.heap);
+                self.scheduler.cancel_task(sibling_id, &mut self.heap);
             }
 
             // Fail the waiter task (the task that awaited the gather)
@@ -798,14 +798,14 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             let HeapReadOutput::GatherFuture(mut gather) = self.heap.read(gid) else {
                 panic!("gather_id doesn't point to a GatherFuture")
             };
-            let task_ids = mem::take(&mut gather.get_mut(self.heap).task_ids);
+            let task_ids = mem::take(&mut gather.get_mut(self).task_ids);
             // Drop the HeapRead before cancel_task which may free heap objects
             drop(gather);
 
             // Cancel sibling tasks (filter out self and already-finished tasks)
             for sibling_id in task_ids {
                 if sibling_id != task_id && !self.scheduler.get_task(sibling_id).is_finished() {
-                    self.scheduler.cancel_task(sibling_id, self.heap);
+                    self.scheduler.cancel_task(sibling_id, &mut self.heap);
                 }
             }
         }

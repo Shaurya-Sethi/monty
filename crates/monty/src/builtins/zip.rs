@@ -75,7 +75,7 @@ pub fn builtin_zip(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -
 
         // Create tuple from collected items
         let (tuple_items, vm) = items_guard.into_parts();
-        let tuple_val = allocate_tuple(tuple_items, vm.heap)?;
+        let tuple_val = allocate_tuple(tuple_items, &vm.heap)?;
         result.push(tuple_val);
     }
 
@@ -100,7 +100,7 @@ fn extract_zip_strict(kwargs: KwargsValues, vm: &mut VM<'_, '_, impl ResourceTra
             continue;
         }
 
-        let Some(keyword_name) = key.as_either_str(vm.heap) else {
+        let Some(keyword_name) = key.as_either_str(&vm.heap) else {
             error = Some(SimpleException::new_msg(ExcType::TypeError, "keywords must be strings").into());
             continue;
         };

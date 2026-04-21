@@ -22,7 +22,7 @@ use crate::{
 /// setattr(obj, 'name', 'foo') # Set obj.name = 'foo'
 /// ```
 pub fn builtin_setattr(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let positional = args.into_pos_only("setattr", vm.heap)?;
+    let positional = args.into_pos_only("setattr", &mut vm.heap)?;
     defer_drop!(positional, vm);
 
     let (object, name, value) = match positional.as_slice() {
@@ -30,7 +30,7 @@ pub fn builtin_setattr(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValue
         other => return Err(ExcType::type_error_arg_count("setattr", 3, other.len())),
     };
 
-    let Some(name) = name.as_either_str(vm.heap) else {
+    let Some(name) = name.as_either_str(&vm.heap) else {
         return Err(SimpleException::new_msg(
             ExcType::TypeError,
             format!("attribute name must be string, not '{}'", name.py_type(vm)),

@@ -27,7 +27,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     /// optimization for small tuples (≤2 elements).
     pub(super) fn build_tuple(&mut self, count: usize) -> Result<(), RunError> {
         let items = self.pop_n(count);
-        let value = allocate_tuple(items.into(), self.heap)?;
+        let value = allocate_tuple(items.into(), &self.heap)?;
         self.push(value);
         Ok(())
     }
@@ -112,7 +112,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                     let chars: Vec<char> = s.as_str().chars().collect();
                     let mut items = Vec::with_capacity(chars.len());
                     for c in chars {
-                        items.push(allocate_char(c, this.heap)?);
+                        items.push(allocate_char(c, &this.heap)?);
                     }
                     items
                 }
@@ -126,7 +126,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 let chars: Vec<char> = s.chars().collect();
                 let mut items = Vec::with_capacity(chars.len());
                 for c in chars {
-                    items.push(allocate_char(c, this.heap)?);
+                    items.push(allocate_char(c, &this.heap)?);
                 }
                 items
             }
@@ -149,7 +149,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             let HeapReadOutput::List(mut list) = this.heap.read(*id) else {
                 panic!("list_extend: expected List on heap");
             };
-            let list = list.get_mut(this.heap);
+            let list = list.get_mut(&mut this.heap);
             // Update contains_refs before extending
             if has_refs {
                 list.set_contains_refs();
@@ -183,8 +183,8 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let HeapData::List(list) = this.heap.get(*id) else {
             return Err(RunError::internal("ListToTuple: expected list"));
         };
-        let items = list.as_slice().iter().map(|v| v.clone_with_heap(this.heap)).collect();
-        let value = allocate_tuple(items, this.heap)?;
+        let items = list.as_slice().iter().map(|v| v.clone_with_heap(&this.heap)).collect();
+        let value = allocate_tuple(items, &this.heap)?;
         this.push(value);
         Ok(())
     }
@@ -363,7 +363,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                     let chars: Vec<char> = s.as_str().chars().collect();
                     let mut items = Vec::with_capacity(chars.len());
                     for c in chars {
-                        items.push(allocate_char(c, this.heap)?);
+                        items.push(allocate_char(c, &this.heap)?);
                     }
                     items
                 }
@@ -377,7 +377,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 let chars: Vec<char> = s.chars().collect();
                 let mut items = Vec::with_capacity(chars.len());
                 for c in chars {
-                    items.push(allocate_char(c, this.heap)?);
+                    items.push(allocate_char(c, &this.heap)?);
                 }
                 items
             }
@@ -520,7 +520,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 // Allocate each character as a new string
                 let mut items = Vec::with_capacity(str_len);
                 for c in s.chars() {
-                    items.push(allocate_char(c, this.heap)?);
+                    items.push(allocate_char(c, &this.heap)?);
                 }
                 // Push items in reverse order so first item is on top
                 for item in items.into_iter().rev() {
@@ -553,7 +553,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                         let chars: Vec<char> = s.as_str().chars().collect();
                         let mut items = Vec::with_capacity(chars.len());
                         for c in chars {
-                            items.push(allocate_char(c, this.heap)?);
+                            items.push(allocate_char(c, &this.heap)?);
                         }
                         // Push items in reverse order so first item is on top
                         for item in items.into_iter().rev() {
@@ -608,7 +608,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 // Allocate each character as a new string
                 let mut items = Vec::with_capacity(chars.len());
                 for c in chars {
-                    items.push(allocate_char(c, this.heap)?);
+                    items.push(allocate_char(c, &this.heap)?);
                 }
                 items
             }
@@ -636,7 +636,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                         }
                         let mut items = Vec::with_capacity(chars.len());
                         for c in chars {
-                            items.push(allocate_char(c, this.heap)?);
+                            items.push(allocate_char(c, &this.heap)?);
                         }
                         items
                     }

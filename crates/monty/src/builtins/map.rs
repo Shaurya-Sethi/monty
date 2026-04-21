@@ -31,7 +31,7 @@ pub fn builtin_map(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -
     let (positional, kwargs) = args.into_parts();
     defer_drop_mut!(positional, vm);
 
-    kwargs.not_supported_yet("map", vm.heap)?;
+    kwargs.not_supported_yet("map", &mut vm.heap)?;
 
     if positional.len() < 2 {
         return Err(SimpleException::new_msg(ExcType::TypeError, "map() must have at least two arguments.").into());
@@ -51,7 +51,7 @@ pub fn builtin_map(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -
         extra_iterators.push(MontyIter::new(iterable, vm)?);
     }
 
-    let mut out = Vec::with_capacity(first_iter.size_hint(vm.heap));
+    let mut out = Vec::with_capacity(first_iter.size_hint(&vm.heap));
 
     // map function over iterables until the shortest iter is exhausted
     match extra_iterators.as_mut_slice() {

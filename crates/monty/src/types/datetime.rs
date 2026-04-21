@@ -980,8 +980,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
     }
 
     fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
-        let a = self.get(vm.heap);
-        let b = other.get(vm.heap);
+        let a = self.get(vm);
+        let b = other.get(vm);
         if is_aware(a) != is_aware(b) {
             return Ok(false);
         }
@@ -996,8 +996,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
         other: &Self,
         vm: &mut VM<'h, '_, impl ResourceTracker>,
     ) -> Result<Option<Ordering>, ResourceError> {
-        let a = self.get(vm.heap);
-        let b = other.get(vm.heap);
+        let a = self.get(vm);
+        let b = other.get(vm);
         if is_aware(a) != is_aware(b) {
             return Ok(None);
         }
@@ -1017,7 +1017,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
         vm: &VM<'h, '_, impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
-        let dt = self.get(vm.heap);
+        let dt = self.get(vm);
         let Some((year, month, day, hour, minute, second, microsecond)) = to_components(dt) else {
             f.write_str("datetime.datetime(<out of range>)")?;
             return Ok(());
@@ -1047,7 +1047,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
     }
 
     fn py_str(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
-        let dt = self.get(vm.heap);
+        let dt = self.get(vm);
         let Some((year, month, day, hour, minute, second, microsecond)) = to_components(dt) else {
             return Ok(Cow::Borrowed("<out of range>"));
         };
@@ -1068,40 +1068,40 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
         attr: &EitherStr,
         args: ArgValues,
     ) -> RunResult<CallResult> {
-        let dt = self.get(vm.heap).clone();
+        let dt = self.get(vm).clone();
         match attr.string_id() {
             Some(id) if id == StaticStrings::Isoformat => {
-                args.check_zero_args("datetime.isoformat", vm.heap)?;
+                args.check_zero_args("datetime.isoformat", &mut vm.heap)?;
                 let s = format_isoformat(&dt, 'T');
                 Ok(CallResult::Value(Value::Ref(
                     vm.heap.allocate(HeapData::Str(str::Str::new(s)))?,
                 )))
             }
             Some(id) if id == StaticStrings::Strftime => {
-                let fmt = date::extract_strftime_arg(args, "datetime.strftime", vm.heap, vm.interns)?;
+                let fmt = date::extract_strftime_arg(args, "datetime.strftime", &mut vm.heap, vm.interns)?;
                 let formatted = dt.naive.format(&fmt).to_string();
                 Ok(CallResult::Value(Value::Ref(
                     vm.heap.allocate(HeapData::Str(str::Str::new(formatted)))?,
                 )))
             }
             Some(id) if id == StaticStrings::Replace => {
-                let result = extract_datetime_replace_kwargs(args, &dt, vm.heap, vm.interns)?;
+                let result = extract_datetime_replace_kwargs(args, &dt, &mut vm.heap, vm.interns)?;
                 Ok(CallResult::Value(result))
             }
             Some(id) if id == StaticStrings::Weekday => {
-                args.check_zero_args("datetime.weekday", vm.heap)?;
+                args.check_zero_args("datetime.weekday", &mut vm.heap)?;
                 Ok(CallResult::Value(Value::Int(i64::from(
                     dt.naive.date().weekday().num_days_from_monday(),
                 ))))
             }
             Some(id) if id == StaticStrings::Isoweekday => {
-                args.check_zero_args("datetime.isoweekday", vm.heap)?;
+                args.check_zero_args("datetime.isoweekday", &mut vm.heap)?;
                 Ok(CallResult::Value(Value::Int(i64::from(
                     dt.naive.date().weekday().number_from_monday(),
                 ))))
             }
             Some(id) if id == StaticStrings::Date => {
-                args.check_zero_args("datetime.date", vm.heap)?;
+                args.check_zero_args("datetime.date", &mut vm.heap)?;
                 let d = date::from_ymd(
                     dt.naive.date().year(),
                     i32::try_from(dt.naive.date().month()).expect("month in 1..12"),
@@ -1110,7 +1110,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
                 Ok(CallResult::Value(Value::Ref(vm.heap.allocate(HeapData::Date(d))?)))
             }
             Some(id) if id == StaticStrings::Timestamp => {
-                args.check_zero_args("datetime.timestamp", vm.heap)?;
+                args.check_zero_args("datetime.timestamp", &mut vm.heap)?;
                 let ts = compute_timestamp(&dt);
                 Ok(CallResult::Value(Value::Float(ts)))
             }
@@ -1121,7 +1121,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
         // Clone to release the HeapRead borrow before accessing attributes
         // that may need to allocate (e.g. tzinfo).
-        let dt = self.get(vm.heap).clone();
+        let dt = self.get(vm).clone();
         match attr.string_id() {
             Some(id) if id == StaticStrings::Year => {
                 Ok(Some(CallResult::Value(Value::Int(i64::from(dt.naive.date().year())))))

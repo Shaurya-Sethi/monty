@@ -321,7 +321,7 @@ impl Signature {
 
         // 2. Collect excess positional args into *args tuple
         if self.var_args.is_some() {
-            namespace[namespace_base + total_positional_params] = allocate_tuple(pos_iter.collect(), vm.heap)?;
+            namespace[namespace_base + total_positional_params] = allocate_tuple(pos_iter.collect(), &vm.heap)?;
         } else {
             // If no *args, excess was already checked above via max_positional_count
             debug_assert_eq!(pos_iter.len(), 0);
@@ -342,7 +342,7 @@ impl Signature {
             let mut value_guard = HeapGuard::new(value, vm);
             let vm = value_guard.heap();
 
-            let Some(keyword_name) = key.as_either_str(vm.heap) else {
+            let Some(keyword_name) = key.as_either_str(&vm.heap) else {
                 return Err(ExcType::type_error("keywords must be strings"));
             };
 

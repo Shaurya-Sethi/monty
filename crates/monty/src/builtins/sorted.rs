@@ -104,7 +104,7 @@ fn parse_sorted_args(
         "sorted",
         "key",
         "reverse",
-        vm.heap,
+        &mut vm.heap,
         vm.interns,
         |_func_name, key_str| {
             // CPython currently reuses the list.sort()-style wording here rather than

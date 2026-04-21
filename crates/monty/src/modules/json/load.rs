@@ -75,7 +75,7 @@ pub(super) fn call_loads(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgVal
     if let Some((key, value)) = kwargs.into_iter().next() {
         defer_drop!(key, vm);
         defer_drop!(value, vm);
-        let Some(keyword_name) = key.as_either_str(vm.heap) else {
+        let Some(keyword_name) = key.as_either_str(&vm.heap) else {
             return Err(ExcType::type_error_kwargs_nonstring_key());
         };
         pos.drop_with_heap(vm);
@@ -180,7 +180,7 @@ fn parse_json_value_from_peek(
             Ok(Value::None)
         }
         Peek::True | Peek::False => jiter.known_bool(peek).map(Value::Bool).map_err(Into::into),
-        Peek::String => allocate_cached_string(parse_json_string(jiter)?, cache, vm.heap),
+        Peek::String => allocate_cached_string(parse_json_string(jiter)?, cache, &vm.heap),
         Peek::Array => parse_json_array(jiter, depth, cache, vm),
         Peek::Object => parse_json_object(jiter, depth, cache, vm),
         _ if peek.is_num() => parse_json_number(peek, jiter, vm),
@@ -223,7 +223,7 @@ fn parse_json_number(
         Ok(NumberAny::Int(NumberInt::BigInt(value))) => {
             let digit_count = decimal_digit_count_ascii(jiter.slice_to_current(start));
             check_decimal_digit_count(digit_count).map_err(JsonLoadError::Run)?;
-            Ok(LongInt::new(value).into_value(vm.heap)?)
+            Ok(LongInt::new(value).into_value(&vm.heap)?)
         }
         Ok(NumberAny::Float(value)) => Ok(Value::Float(value)),
         Err(error) => Err(error.into()),
@@ -294,7 +294,7 @@ fn parse_json_object(
     {
         let (dict, vm) = dict_guard.as_parts_mut();
         loop {
-            let key_value = allocate_cached_string(key, cache, vm.heap)?;
+            let key_value = allocate_cached_string(key, cache, &vm.heap)?;
             let value = parse_json_value(jiter, depth + 1, cache, vm)?;
             if let Some(old_value) = dict.set_json_string_key(key_value, value, vm)? {
                 old_value.drop_with_heap(vm);

@@ -19,7 +19,7 @@ use crate::{
 /// The default start value is 0. String start values are explicitly rejected
 /// (use `''.join(seq)` instead for string concatenation).
 pub fn builtin_sum(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let (iterable, start) = args.get_one_two_args("sum", vm.heap)?;
+    let (iterable, start) = args.get_one_two_args("sum", &mut vm.heap)?;
     defer_drop_mut!(start, vm);
 
     let iter = MontyIter::new(iterable, vm)?;

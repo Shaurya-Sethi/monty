@@ -256,20 +256,20 @@ impl Type {
         match (self, method_id) {
             (Self::Dict, m) if m == StaticStrings::Fromkeys => dict_fromkeys(args, vm).map(AttrCallResult::Value),
             (Self::Bytes, m) if m == StaticStrings::Fromhex => bytes_fromhex(args, vm).map(AttrCallResult::Value),
-            (Self::Date, m) if m == StaticStrings::Today => date::class_today(vm.heap, args),
+            (Self::Date, m) if m == StaticStrings::Today => date::class_today(&mut vm.heap, args),
             (Self::Date, m) if m == StaticStrings::Fromisoformat => {
-                date::class_fromisoformat(vm.heap, args, vm.interns).map(AttrCallResult::Value)
+                date::class_fromisoformat(&mut vm.heap, args, vm.interns).map(AttrCallResult::Value)
             }
-            (Self::DateTime, m) if m == StaticStrings::Now => datetime::class_now(vm.heap, args, vm.interns),
+            (Self::DateTime, m) if m == StaticStrings::Now => datetime::class_now(&mut vm.heap, args, vm.interns),
             (Self::DateTime, m) if m == StaticStrings::Strptime => {
-                datetime::class_strptime(vm.heap, args, vm.interns).map(AttrCallResult::Value)
+                datetime::class_strptime(&mut vm.heap, args, vm.interns).map(AttrCallResult::Value)
             }
             (Self::DateTime, m) if m == StaticStrings::Fromisoformat => {
-                datetime::class_fromisoformat(vm.heap, args, vm.interns).map(AttrCallResult::Value)
+                datetime::class_fromisoformat(&mut vm.heap, args, vm.interns).map(AttrCallResult::Value)
             }
             _ => {
                 let method_name = vm.interns.get_str(method_id);
-                args.drop_with_heap(vm.heap);
+                args.drop_with_heap(vm);
                 Err(ExcType::attribute_error(self, method_name))
             }
         }
@@ -291,17 +291,17 @@ impl Type {
             Self::Bytes => Bytes::init(vm, args),
             Self::Range => Range::init(vm, args),
             Self::Slice => Slice::init(vm, args),
-            Self::Date => date::init(vm.heap, args, vm.interns),
-            Self::DateTime => datetime::init(vm.heap, args, vm.interns),
-            Self::TimeDelta => timedelta::init(vm.heap, args, vm.interns),
-            Self::TimeZone => TimeZone::init(vm.heap, args, vm.interns),
+            Self::Date => date::init(&mut vm.heap, args, vm.interns),
+            Self::DateTime => datetime::init(&mut vm.heap, args, vm.interns),
+            Self::TimeDelta => timedelta::init(&mut vm.heap, args, vm.interns),
+            Self::TimeZone => TimeZone::init(&mut vm.heap, args, vm.interns),
             Self::Iterator => MontyIter::init(vm, args),
             Self::Path => Path::init(vm, args),
 
             // Primitive types - inline implementation
             Self::Int => {
                 let interns = vm.interns;
-                let Some(v) = args.get_zero_one_arg("int", vm.heap)? else {
+                let Some(v) = args.get_zero_one_arg("int", &mut vm.heap)? else {
                     return Ok(Value::Int(0));
                 };
                 defer_drop!(v, vm);
@@ -309,10 +309,10 @@ impl Type {
                     Value::Int(i) => Ok(Value::Int(*i)),
                     Value::Float(f) => Ok(Value::Int(f64_to_i64_truncate(*f))),
                     Value::Bool(b) => Ok(Value::Int(i64::from(*b))),
-                    Value::InternString(string_id) => parse_int_from_str(interns.get_str(*string_id), vm.heap),
+                    Value::InternString(string_id) => parse_int_from_str(interns.get_str(*string_id), &vm.heap),
                     Value::Ref(heap_id) => match vm.heap.get(*heap_id) {
-                        HeapData::Str(s) => parse_int_from_str(s.as_str(), vm.heap),
-                        HeapData::LongInt(_) => Ok(v.clone_with_heap(vm.heap)),
+                        HeapData::Str(s) => parse_int_from_str(s.as_str(), &vm.heap),
+                        HeapData::LongInt(_) => Ok(v.clone_with_heap(vm)),
                         _ => Err(ExcType::type_error_int_conversion(v.py_type(vm))),
                     },
                     _ => Err(ExcType::type_error_int_conversion(v.py_type(vm))),
@@ -320,7 +320,7 @@ impl Type {
             }
             Self::Float => {
                 let interns = vm.interns;
-                let Some(v) = args.get_zero_one_arg("float", vm.heap)? else {
+                let Some(v) = args.get_zero_one_arg("float", &mut vm.heap)? else {
                     return Ok(Value::Float(0.0));
                 };
                 defer_drop!(v, vm);
@@ -339,7 +339,7 @@ impl Type {
                 }
             }
             Self::Bool => {
-                let Some(v) = args.get_zero_one_arg("bool", vm.heap)? else {
+                let Some(v) = args.get_zero_one_arg("bool", &mut vm.heap)? else {
                     return Ok(Value::Bool(false));
                 };
                 defer_drop!(v, vm);

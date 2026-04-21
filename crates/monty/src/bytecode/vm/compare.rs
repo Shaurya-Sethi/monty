@@ -130,7 +130,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                     // Handle InternLongInt by converting to heap LongInt for comparison
                     let k_value = if let Value::InternLongInt(id) = k {
                         let bi = this.interns.get_long_int(*id).clone();
-                        LongInt::new(bi).into_value(this.heap)?
+                        LongInt::new(bi).into_value(&this.heap)?
                     } else {
                         // k is from the constant pool and is always an immediate value
                         k.clone_immediate()

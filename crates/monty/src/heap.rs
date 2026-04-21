@@ -16,7 +16,9 @@ use smallvec::SmallVec;
 // Re-export items moved to `heap_traits` so that `crate::heap::HeapGuard` etc. continue
 // to resolve (used by the `defer_drop!` macros and throughout the codebase).
 pub(crate) use crate::heap_data::HeapData;
-pub(crate) use crate::heap_traits::{ContainsHeap, DropWithHeap, HeapGuard, HeapItem, ImmutableHeapGuard};
+pub(crate) use crate::heap_traits::{
+    ContainsHeap, ContainsHeapReader, DropWithHeap, HeapGuard, HeapItem, ImmutableHeapGuard,
+};
 use crate::{
     asyncio::{Coroutine, GatherFuture, GatherItem},
     bytecode::VM,
@@ -123,9 +125,11 @@ pub(crate) struct HeapReader<'a, T: ResourceTracker> {
 impl<T: ResourceTracker> HeapReader<'_, T> {
     /// The ONLY way to get a `HeapReader`. By only providing an API which takes a closure which
     /// must be satisfied for all `'a`, it's impossible to create other `HeapReader` with the
-    /// exact same lifetime `'a`.
-    pub fn with<R>(heap: &mut Heap<T>, f: impl for<'a> FnOnce(&'a mut HeapReader<'a, T>) -> R) -> R {
-        f(&mut HeapReader {
+    /// exact same lifetime `'a`. Passing the reader by value (rather than by `&mut`) allows the
+    /// closure body to give ownership of the reader to a long-lived structure (e.g. the `VM`)
+    /// without an extra layer of indirection.
+    pub fn with<R>(heap: &mut Heap<T>, f: impl for<'a> FnOnce(HeapReader<'a, T>) -> R) -> R {
+        f(HeapReader {
             heap: &mut *heap,
             phantom: PhantomData,
         })
@@ -347,10 +351,15 @@ impl<T: ?Sized> Drop for HeapRead<'_, T> {
 
 impl<'a, T: ?Sized> HeapRead<'a, T> {
     /// Accesses the value contained in this reference.
-    pub fn get<'r, RT: ResourceTracker>(&self, _: &'r HeapReader<'a, RT>) -> &'r T {
+    ///
+    /// Accepts any `&impl ContainsHeapReader<'a>` so callers can pass a `HeapReader`
+    /// directly *or* a structure that owns one (typically a `VM`). The invariant `'a`
+    /// matching between this `HeapRead` and the borrowed `HeapReader` is what
+    /// guarantees the read is sound.
+    pub fn get<'r>(&self, _: &'r impl ContainsHeapReader<'a>) -> &'r T {
         // SAFETY: (DH)
-        //  - The HeapReader has an invariant lifetime 'a which guarantees that this HeapRead
-        //    came from the heap borrowed by this HeapReader.
+        //  - The reader's invariant lifetime 'a guarantees that this HeapRead came
+        //    from the heap borrowed by the underlying HeapReader.
         //  - The address of the `HeapValue` never changes because entries are stored in
         //    paged storage (`HeapEntries`) where each page is never reallocated or moved.
         //  - The HeapRead holds a strong reader reference (via the `readers` counter in
@@ -358,13 +367,17 @@ impl<'a, T: ?Sized> HeapRead<'a, T> {
         //    while this `HeapRead` exists.
         //  - The type of the `HeapValue` can never change once allocated. This is
         //    guaranteed by never exposing `&mut HeapData` outside of this module.
-        //  - The borrow on `HeapReader` guarantees that there are no mutable borrows on any heap
-        //    data while the return value of this function is alive.
+        //  - The shared borrow on the reader guarantees no mutable borrows on heap data
+        //    can be obtained while the return value of this function is alive (any path
+        //    to `&mut Heap` requires `&mut self` on the reader / its owner).
         unsafe { self.value.as_ref() }
     }
 
     /// Mutably accesses the value contained in this reference.
-    pub fn get_mut<'r>(&mut self, _: &'r mut HeapReader<'a, impl ResourceTracker>) -> &'r mut T {
+    ///
+    /// Accepts any `&mut impl ContainsHeapReader<'a>` — see [`Self::get`] for the
+    /// rationale.
+    pub fn get_mut<'r>(&mut self, _: &'r mut impl ContainsHeapReader<'a>) -> &'r mut T {
         // SAFETY: see same constraints as in get() above.
         unsafe { self.value.as_mut() }
     }
@@ -435,7 +448,7 @@ impl<'a, T: ?Sized> HeapRead<'a, T> {
 }
 
 impl<'a, T> HeapRead<'a, Vec<T>> {
-    pub fn as_slice(&self, reader: &HeapReader<'a, impl ResourceTracker>) -> BorrowedHeapRead<'_, 'a, [T]> {
+    pub fn as_slice(&self, reader: &impl ContainsHeapReader<'a>) -> BorrowedHeapRead<'_, 'a, [T]> {
         BorrowedHeapRead {
             inner: ManuallyDrop::new(HeapRead {
                 value: NonNull::from(self.get(reader).as_slice()),
@@ -448,7 +461,7 @@ impl<'a, T> HeapRead<'a, Vec<T>> {
 }
 
 impl<'a, T: ?Sized> HeapRead<'a, Box<T>> {
-    pub fn as_box_value(&self, reader: &HeapReader<'a, impl ResourceTracker>) -> BorrowedHeapRead<'_, 'a, T> {
+    pub fn as_box_value(&self, reader: &impl ContainsHeapReader<'a>) -> BorrowedHeapRead<'_, 'a, T> {
         BorrowedHeapRead {
             inner: ManuallyDrop::new(HeapRead {
                 value: NonNull::from(self.get(reader).as_ref()),
@@ -489,9 +502,13 @@ pub(crate) unsafe fn cast_as_member_ref_type_hinted<'r, 'a, T, U>(
 macro_rules! heap_read_ref_as_field {
     ($heap_read:ident, $ty:ty, $field:tt) => {{
         let offset = std::mem::offset_of!($ty, $field);
-        #[expect(unreachable_code)]
+        // The reader is given a concrete type because `get` takes
+        // `&impl ContainsHeapReader`, which can't be turbofished — the concrete
+        // resource tracker is irrelevant since the closure is never invoked.
+        #[expect(unreachable_code, unused_variables, clippy::diverging_sub_expression)]
         let type_hint = |read: &$crate::heap::HeapRead<'_, $ty>| {
-            &raw const read.get::<$crate::NoLimitTracker>(unreachable!()).$field
+            let reader: &$crate::heap::HeapReader<'_, $crate::NoLimitTracker> = unreachable!();
+            &raw const read.get(reader).$field
         };
         // SAFETY: (DH)
         //  - `std::mem::offset_of!` guarantees there is a field at fixed offset
@@ -536,9 +553,13 @@ pub(crate) unsafe fn cast_as_member_ref_mut_type_hinted<'r, 'a, T, U>(
 macro_rules! heap_read_ref_as_field_mut {
     ($heap_read:ident, $ty:ty, $field:tt) => {{
         let offset = std::mem::offset_of!($ty, $field);
-        #[expect(unreachable_code)]
+        // The reader is given a concrete type because `get` takes
+        // `&impl ContainsHeapReader`, which can't be turbofished — the concrete
+        // resource tracker is irrelevant since the closure is never invoked.
+        #[expect(unreachable_code, unused_variables, clippy::diverging_sub_expression)]
         let type_hint = |read: &$crate::heap::HeapRead<'_, $ty>| {
-            &raw const read.get::<$crate::NoLimitTracker>(unreachable!()).$field
+            let reader: &$crate::heap::HeapReader<'_, $crate::NoLimitTracker> = unreachable!();
+            &raw const read.get(reader).$field
         };
         // SAFETY: (DH)
         //  - `std::mem::offset_of!` guarantees there is a field at fixed offset
@@ -1306,21 +1327,21 @@ fn compute_hash_from_read<'h>(
         // Str/Bytes: hash just the content (consistent with InternString/InternBytes)
         HeapReadOutput::Str(s) => {
             let mut hasher = DefaultHasher::new();
-            s.get(vm.heap).as_str().hash(&mut hasher);
+            s.get(vm).as_str().hash(&mut hasher);
             Ok(Some(hasher.finish()))
         }
         HeapReadOutput::Bytes(b) => {
             let mut hasher = DefaultHasher::new();
-            b.get(vm.heap).as_slice().hash(&mut hasher);
+            b.get(vm).as_slice().hash(&mut hasher);
             Ok(Some(hasher.finish()))
         }
         // Tuple: hashable only if all elements are hashable
         HeapReadOutput::Tuple(tuple) => {
             let token = vm.heap.incr_recursion_depth()?;
             crate::defer_drop!(token, vm);
-            let len = tuple.get(vm.heap).as_slice().len();
+            let len = tuple.get(vm).as_slice().len();
             let mut hasher = DefaultHasher::new();
-            heap_disc(vm.heap, id).hash(&mut hasher);
+            heap_disc(&vm.heap, id).hash(&mut hasher);
             for i in 0..len {
                 let h = hash_element_at(|r| &tuple.get(r).as_slice()[i], vm)?;
                 match h {
@@ -1334,9 +1355,9 @@ fn compute_hash_from_read<'h>(
         HeapReadOutput::NamedTuple(nt) => {
             let token = vm.heap.incr_recursion_depth()?;
             crate::defer_drop!(token, vm);
-            let len = nt.get(vm.heap).as_vec().len();
+            let len = nt.get(vm).as_vec().len();
             let mut hasher = DefaultHasher::new();
-            heap_disc(vm.heap, id).hash(&mut hasher);
+            heap_disc(&vm.heap, id).hash(&mut hasher);
             for i in 0..len {
                 let h = hash_element_at(|r| &nt.get(r).as_vec()[i], vm)?;
                 match h {
@@ -1352,24 +1373,24 @@ fn compute_hash_from_read<'h>(
         HeapReadOutput::Dataclass(dc) => dc.compute_hash(vm),
         // Closure/FunctionDefaults: hash by function ID
         HeapReadOutput::Closure(closure) => {
-            let func_id = closure.get(vm.heap).func_id;
+            let func_id = closure.get(vm).func_id;
             let mut hasher = DefaultHasher::new();
-            heap_disc(vm.heap, id).hash(&mut hasher);
+            heap_disc(&vm.heap, id).hash(&mut hasher);
             func_id.hash(&mut hasher);
             Ok(Some(hasher.finish()))
         }
         HeapReadOutput::FunctionDefaults(fd) => {
-            let func_id = fd.get(vm.heap).func_id;
+            let func_id = fd.get(vm).func_id;
             let mut hasher = DefaultHasher::new();
-            heap_disc(vm.heap, id).hash(&mut hasher);
+            heap_disc(&vm.heap, id).hash(&mut hasher);
             func_id.hash(&mut hasher);
             Ok(Some(hasher.finish()))
         }
         // Range: hash start, stop, step
         HeapReadOutput::Range(range) => {
-            let r = range.get(vm.heap);
+            let r = range.get(vm);
             let mut hasher = DefaultHasher::new();
-            heap_disc(vm.heap, id).hash(&mut hasher);
+            heap_disc(&vm.heap, id).hash(&mut hasher);
             r.start.hash(&mut hasher);
             r.stop.hash(&mut hasher);
             r.step.hash(&mut hasher);
@@ -1377,9 +1398,9 @@ fn compute_hash_from_read<'h>(
         }
         // Slice: hash start, stop, step
         HeapReadOutput::Slice(slice) => {
-            let s = slice.get(vm.heap);
+            let s = slice.get(vm);
             let mut hasher = DefaultHasher::new();
-            heap_disc(vm.heap, id).hash(&mut hasher);
+            heap_disc(&vm.heap, id).hash(&mut hasher);
             s.start.hash(&mut hasher);
             s.stop.hash(&mut hasher);
             s.step.hash(&mut hasher);
@@ -1388,42 +1409,42 @@ fn compute_hash_from_read<'h>(
         // Path: hash the path string
         HeapReadOutput::Path(path) => {
             let mut hasher = DefaultHasher::new();
-            heap_disc(vm.heap, id).hash(&mut hasher);
-            path.get(vm.heap).as_str().hash(&mut hasher);
+            heap_disc(&vm.heap, id).hash(&mut hasher);
+            path.get(vm).as_str().hash(&mut hasher);
             Ok(Some(hasher.finish()))
         }
         // LongInt: uses its own hash method
-        HeapReadOutput::LongInt(li) => Ok(Some(li.get(vm.heap).hash())),
+        HeapReadOutput::LongInt(li) => Ok(Some(li.get(vm).hash())),
         // ExtFunction: hash by name
         HeapReadOutput::ExtFunction(name) => {
             let mut hasher = DefaultHasher::new();
-            heap_disc(vm.heap, id).hash(&mut hasher);
-            name.get(vm.heap).hash(&mut hasher);
+            heap_disc(&vm.heap, id).hash(&mut hasher);
+            name.get(vm).hash(&mut hasher);
             Ok(Some(hasher.finish()))
         }
         // Datetime types: hash by discriminant + value
         HeapReadOutput::Date(d) => {
             let mut hasher = DefaultHasher::new();
-            heap_disc(vm.heap, id).hash(&mut hasher);
-            d.get(vm.heap).hash(&mut hasher);
+            heap_disc(&vm.heap, id).hash(&mut hasher);
+            d.get(vm).hash(&mut hasher);
             Ok(Some(hasher.finish()))
         }
         HeapReadOutput::DateTime(d) => {
             let mut hasher = DefaultHasher::new();
-            heap_disc(vm.heap, id).hash(&mut hasher);
-            d.get(vm.heap).hash(&mut hasher);
+            heap_disc(&vm.heap, id).hash(&mut hasher);
+            d.get(vm).hash(&mut hasher);
             Ok(Some(hasher.finish()))
         }
         HeapReadOutput::TimeDelta(d) => {
             let mut hasher = DefaultHasher::new();
-            heap_disc(vm.heap, id).hash(&mut hasher);
-            d.get(vm.heap).hash(&mut hasher);
+            heap_disc(&vm.heap, id).hash(&mut hasher);
+            d.get(vm).hash(&mut hasher);
             Ok(Some(hasher.finish()))
         }
         HeapReadOutput::TimeZone(d) => {
             let mut hasher = DefaultHasher::new();
-            heap_disc(vm.heap, id).hash(&mut hasher);
-            d.get(vm.heap).hash(&mut hasher);
+            heap_disc(&vm.heap, id).hash(&mut hasher);
+            d.get(vm).hash(&mut hasher);
             Ok(Some(hasher.finish()))
         }
         // All other types are unhashable
@@ -1441,14 +1462,14 @@ fn hash_element_at<'h, T: ResourceTracker>(
     read_element: impl for<'r> Fn(&'r HeapReader<'h, T>) -> &'r Value,
     vm: &mut VM<'h, '_, T>,
 ) -> Result<Option<u64>, ResourceError> {
-    let ref_id = match read_element(vm.heap) {
+    let ref_id = match read_element(&vm.heap) {
         Value::Ref(id) => Some(*id),
         _ => None,
     };
     if let Some(id) = ref_id {
         Heap::get_or_compute_hash(vm, id)
     } else {
-        let value = read_element(vm.heap).clone_immediate();
+        let value = read_element(&vm.heap).clone_immediate();
         value.py_hash(vm)
     }
 }

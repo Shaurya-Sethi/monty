@@ -117,7 +117,7 @@ impl Range {
     /// - `range(start, stop)` - range from start to stop
     /// - `range(start, stop, step)` - range with custom step
     pub fn init(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-        let pos_args = args.into_pos_only("range", vm.heap)?;
+        let pos_args = args.into_pos_only("range", &mut vm.heap)?;
         defer_drop!(pos_args, vm);
 
         let range = match pos_args.as_slice() {
@@ -208,7 +208,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Range> {
     }
 
     fn py_len(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> Option<usize> {
-        Some(self.get(vm.heap).len())
+        Some(self.get(vm).len())
     }
 
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
@@ -216,11 +216,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Range> {
         if let Value::Ref(id) = key
             && let HeapData::Slice(slice) = vm.heap.get(*id)
         {
-            let range = *self.get(vm.heap);
-            return range.getitem_slice(slice, vm.heap);
+            let range = *self.get(vm);
+            return range.getitem_slice(slice, &vm.heap);
         }
 
-        let range = *self.get(vm.heap);
+        let range = *self.get(vm);
 
         // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt
         let index = key.as_index(vm, Type::Range)?;
@@ -244,8 +244,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Range> {
     }
 
     fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
-        let a = self.get(vm.heap);
-        let b = other.get(vm.heap);
+        let a = self.get(vm);
+        let b = other.get(vm);
         // Compare ranges by their actual sequences, not parameters.
         // Two ranges are equal if they produce the same elements.
         let len1 = a.len();
@@ -261,7 +261,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Range> {
     }
 
     fn py_bool(&self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
-        !self.get(vm.heap).is_empty()
+        !self.get(vm).is_empty()
     }
 
     fn py_repr_fmt(
@@ -270,7 +270,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Range> {
         vm: &VM<'h, '_, impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
-        let this = self.get(vm.heap);
+        let this = self.get(vm);
         if this.step == 1 {
             Ok(write!(f, "range({}, {})", this.start, this.stop)?)
         } else {

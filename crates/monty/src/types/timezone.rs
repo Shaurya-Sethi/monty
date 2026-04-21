@@ -257,7 +257,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TimeZone> {
     }
 
     fn py_eq(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<bool, ResourceError> {
-        Ok(self.get(vm.heap).offset_seconds == other.get(vm.heap).offset_seconds)
+        Ok(self.get(vm).offset_seconds == other.get(vm).offset_seconds)
     }
 
     fn py_bool(&self, _vm: &mut VM<'h, '_, impl ResourceTracker>) -> bool {
@@ -270,7 +270,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TimeZone> {
         vm: &VM<'h, '_, impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
-        let tz = self.get(vm.heap);
+        let tz = self.get(vm);
         if tz.offset_seconds == 0 && tz.name.is_none() {
             f.write_str("datetime.timezone.utc")?;
             return Ok(());
@@ -286,7 +286,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TimeZone> {
     }
 
     fn py_str(&self, vm: &VM<'h, '_, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
-        let tz = self.get(vm.heap);
+        let tz = self.get(vm);
         if let Some(name) = &tz.name {
             return Ok(Cow::Owned(name.clone()));
         }

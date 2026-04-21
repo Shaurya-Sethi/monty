@@ -73,7 +73,7 @@ fn extract_print_kwargs(
             continue;
         }
 
-        let Some(keyword_name) = key.as_either_str(vm.heap) else {
+        let Some(keyword_name) = key.as_either_str(&vm.heap) else {
             error = Some(SimpleException::new_msg(ExcType::TypeError, "keywords must be strings").into());
             continue;
         };

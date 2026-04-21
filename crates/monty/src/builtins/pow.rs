@@ -20,7 +20,7 @@ use crate::{
 /// Handles negative exponents by returning a float.
 pub fn builtin_pow(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     // pow() accepts 2 or 3 arguments
-    let positional = args.into_pos_only("pow", vm.heap)?;
+    let positional = args.into_pos_only("pow", &mut vm.heap)?;
     defer_drop!(positional, vm);
 
     match positional.as_slice() {
@@ -135,7 +135,7 @@ fn checked_pow_i64(mut base: i64, mut exp: u32) -> Option<i64> {
 /// On overflow, promotes to LongInt instead of returning an error.
 fn two_arg_pow(base: &Value, exp: &Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
     match (base, exp) {
-        (Value::Int(b), Value::Int(e)) => int_pow_int(*b, *e, vm.heap),
+        (Value::Int(b), Value::Int(e)) => int_pow_int(*b, *e, &mut vm.heap),
         (Value::Int(b), Value::Ref(id)) => {
             // Clone to avoid borrow conflict with heap mutation
             let e_bi = if let HeapData::LongInt(li) = vm.heap.get(*id) {
@@ -147,7 +147,7 @@ fn two_arg_pow(base: &Value, exp: &Value, vm: &mut VM<'_, '_, impl ResourceTrack
                     exp.py_type(vm),
                 ));
             };
-            int_pow_longint(*b, &e_bi, vm.heap)
+            int_pow_longint(*b, &e_bi, &mut vm.heap)
         }
         (Value::Ref(id), Value::Int(e)) => {
             // Clone to avoid borrow conflict with heap mutation
@@ -160,7 +160,7 @@ fn two_arg_pow(base: &Value, exp: &Value, vm: &mut VM<'_, '_, impl ResourceTrack
                     exp.py_type(vm),
                 ));
             };
-            longint_pow_int(&b_bi, *e, vm.heap)
+            longint_pow_int(&b_bi, *e, &mut vm.heap)
         }
         (Value::Ref(id1), Value::Ref(id2)) => {
             // Clone both to avoid borrow conflict with heap mutation
@@ -182,7 +182,7 @@ fn two_arg_pow(base: &Value, exp: &Value, vm: &mut VM<'_, '_, impl ResourceTrack
                     exp.py_type(vm),
                 ));
             };
-            longint_pow_longint(&b_bi, &e_bi, vm.heap)
+            longint_pow_longint(&b_bi, &e_bi, &mut vm.heap)
         }
         (Value::Float(b), Value::Float(e)) => {
             if *b == 0.0 && *e < 0.0 {

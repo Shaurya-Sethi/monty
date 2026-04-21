@@ -28,7 +28,7 @@ use crate::{
 /// hasattr(42, 'nonexistent')    # False - int has no such attribute
 /// ```
 pub fn builtin_hasattr(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let positional = args.into_pos_only("hasattr", vm.heap)?;
+    let positional = args.into_pos_only("hasattr", &mut vm.heap)?;
     defer_drop!(positional, vm);
 
     let (object, name) = match positional.as_slice() {
@@ -36,7 +36,7 @@ pub fn builtin_hasattr(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValue
         other => return Err(ExcType::type_error_arg_count("hasattr", 2, other.len())),
     };
 
-    let Some(name) = name.as_either_str(vm.heap) else {
+    let Some(name) = name.as_either_str(&vm.heap) else {
         return Err(SimpleException::new_msg(
             ExcType::TypeError,
             format!("attribute name must be string, not '{}'", name.py_type(vm)),

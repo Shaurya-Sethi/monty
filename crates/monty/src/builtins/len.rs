@@ -14,7 +14,7 @@ use crate::{
 ///
 /// Returns the length of an object (number of items in a container).
 pub fn builtin_len(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("len", vm.heap)?;
+    let value = args.get_one_arg("len", &mut vm.heap)?;
     defer_drop!(value, vm);
     if let Some(len) = value.py_len(vm) {
         Ok(Value::Int(i64::try_from(len).expect("len exceeds i64::MAX")))

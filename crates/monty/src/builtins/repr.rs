@@ -9,7 +9,7 @@ use crate::{
 ///
 /// Returns a string containing a printable representation of an object.
 pub fn builtin_repr(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let value = args.get_one_arg("repr", vm.heap)?;
+    let value = args.get_one_arg("repr", &mut vm.heap)?;
     defer_drop!(value, vm);
     let s = value.py_repr(vm)?.into_owned();
     let heap_id = vm.heap.allocate(HeapData::Str(s.into()))?;

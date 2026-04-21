@@ -218,7 +218,7 @@ fn call_compile(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> R
 fn call_search(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (pattern, text, flags) = extract_pattern_string_flags(args, "re.search", vm)?;
     let compiled = RePattern::compile(pattern, flags)?;
-    compiled.search(&text, vm.heap)
+    compiled.search(&text, &vm.heap)
 }
 
 /// `re.match(pattern, string, flags=0)` — match at the beginning of the string.
@@ -228,7 +228,7 @@ fn call_search(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> Ru
 fn call_match(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (pattern, text, flags) = extract_pattern_string_flags(args, "re.match", vm)?;
     let compiled = RePattern::compile(pattern, flags)?;
-    compiled.match_start(&text, vm.heap)
+    compiled.match_start(&text, &vm.heap)
 }
 
 /// `re.fullmatch(pattern, string, flags=0)` — match the entire string.
@@ -238,7 +238,7 @@ fn call_match(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> Run
 fn call_fullmatch(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (pattern, text, flags) = extract_pattern_string_flags(args, "re.fullmatch", vm)?;
     let compiled = RePattern::compile(pattern, flags)?;
-    compiled.fullmatch(&text, vm.heap)
+    compiled.fullmatch(&text, &vm.heap)
 }
 
 /// `re.findall(pattern, string, flags=0)` — find all non-overlapping matches.
@@ -248,7 +248,7 @@ fn call_fullmatch(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) ->
 fn call_findall(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (pattern, text, flags) = extract_pattern_string_flags(args, "re.findall", vm)?;
     let compiled = RePattern::compile(pattern, flags)?;
-    compiled.findall(&text, vm.heap)
+    compiled.findall(&text, &vm.heap)
 }
 
 /// `re.sub(pattern, repl, string, count=0, flags=0)` — substitute matches with a replacement.
@@ -290,7 +290,7 @@ fn call_sub(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunRe
     let (mut kw_count, mut kw_flags): (Option<Value>, Option<Value>) = (None, None);
     for (key, value) in kwargs {
         defer_drop!(key, vm);
-        let Some(keyword_name) = key.as_either_str(vm.heap) else {
+        let Some(keyword_name) = key.as_either_str(&vm.heap) else {
             value.drop_with_heap(vm);
             return Err(ExcType::type_error("keywords must be strings"));
         };
@@ -352,7 +352,7 @@ fn call_sub(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunRe
     let pattern = value_to_str(pattern_val, vm)?.into_owned();
 
     // Check that repl is a string — callable replacement is not supported
-    if !repl_val.is_str(vm.heap) {
+    if !repl_val.is_str(&vm.heap) {
         return Err(ExcType::type_error(
             "callable replacement is not yet supported in re.sub()",
         ));
@@ -361,7 +361,7 @@ fn call_sub(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunRe
     let text = value_to_str(string_val, vm)?.into_owned();
 
     let compiled = RePattern::compile(pattern, flags)?;
-    compiled.sub(&repl, &text, count, vm.heap)
+    compiled.sub(&repl, &text, count, &vm.heap)
 }
 
 /// `re.split(pattern, string, maxsplit=0, flags=0)` — split string by pattern occurrences.
@@ -396,7 +396,7 @@ fn call_split(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> Run
     let (mut kw_maxsplit, mut kw_flags): (Option<Value>, Option<Value>) = (None, None);
     for (key, value) in kwargs {
         defer_drop!(key, vm);
-        let Some(keyword_name) = key.as_either_str(vm.heap) else {
+        let Some(keyword_name) = key.as_either_str(&vm.heap) else {
             value.drop_with_heap(vm);
             return Err(ExcType::type_error("keywords must be strings"));
         };
@@ -436,7 +436,7 @@ fn call_split(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> Run
     let text = value_to_str(string_val, vm)?.into_owned();
 
     let compiled = RePattern::compile(pattern, flags)?;
-    compiled.split(&text, maxsplit, vm.heap)
+    compiled.split(&text, maxsplit, &vm.heap)
 }
 
 /// `re.finditer(pattern, string, flags=0)` — return all matches as a list.
@@ -447,7 +447,7 @@ fn call_split(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> Run
 fn call_finditer(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (pattern, text, flags) = extract_pattern_string_flags(args, "re.finditer", vm)?;
     let compiled = RePattern::compile(pattern, flags)?;
-    compiled.finditer(&text, vm.heap)
+    compiled.finditer(&text, &vm.heap)
 }
 
 /// `re.escape(pattern)` — escape special regex characters in a string.
@@ -458,7 +458,7 @@ fn call_finditer(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> 
 ///
 /// Escaped characters: `\t \n \v \f \r   # $ & ( ) * + - . ? [ \ ] ^ { | } ~`
 fn call_escape(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
-    let arg = args.get_one_arg("re.escape", vm.heap)?;
+    let arg = args.get_one_arg("re.escape", &mut vm.heap)?;
     defer_drop!(arg, vm);
     let text = value_to_str(arg, vm)?.into_owned();
 
@@ -537,7 +537,7 @@ fn extract_pattern_and_flags(
     func_name: &str,
     vm: &mut VM<'_, '_, impl ResourceTracker>,
 ) -> RunResult<(String, u16)> {
-    let (pattern_val, flags_val) = args.get_one_two_args(func_name, vm.heap)?;
+    let (pattern_val, flags_val) = args.get_one_two_args(func_name, &mut vm.heap)?;
     defer_drop!(pattern_val, vm);
 
     let pattern = value_to_str(pattern_val, vm)?.into_owned();
@@ -573,7 +573,7 @@ fn extract_pattern_string_flags(
     func_name: &str,
     vm: &mut VM<'_, '_, impl ResourceTracker>,
 ) -> RunResult<(String, Cow<'static, str>, u16)> {
-    let pos = args.into_pos_only(func_name, vm.heap)?;
+    let pos = args.into_pos_only(func_name, &mut vm.heap)?;
     defer_drop_mut!(pos, vm);
 
     let Some(pattern_val) = pos.next() else {
