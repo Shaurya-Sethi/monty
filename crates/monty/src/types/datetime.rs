@@ -1029,7 +1029,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        vm: &VM<'h, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
         let dt = self.get(&vm.heap);
@@ -1061,7 +1061,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
         Ok(())
     }
 
-    fn py_str(&self, vm: &VM<'h, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
+    fn py_str(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
         let dt = self.get(&vm.heap);
         let Some((year, month, day, hour, minute, second, microsecond)) = to_components(dt) else {
             return Ok(Cow::Borrowed("<out of range>"));

@@ -506,7 +506,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        vm: &VM<'h, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
         // Format like: PosixPath('/usr/bin')

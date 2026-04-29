@@ -217,13 +217,13 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        vm: &VM<'h, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
         Ok(string_repr_fmt(&self.get(&vm.heap).0, f)?)
     }
 
-    fn py_str(&self, vm: &VM<'h, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
+    fn py_str(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
         Ok(self.get(&vm.heap).0.clone().into_string().into())
     }
 

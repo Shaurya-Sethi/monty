@@ -277,7 +277,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
     fn py_repr_fmt(
         &self,
         f: &mut impl Write,
-        vm: &VM<'h, impl ResourceTracker>,
+        vm: &mut VM<'h, impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
         let (year, month, day) = to_ymd(*self.get(&vm.heap));
@@ -285,7 +285,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
         Ok(())
     }
 
-    fn py_str(&self, vm: &VM<'h, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
+    fn py_str(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
         let (year, month, day) = to_ymd(*self.get(&vm.heap));
         Ok(Cow::Owned(format!("{year:04}-{month:02}-{day:02}")))
     }
