@@ -20,7 +20,7 @@ use crate::{
     heap::{HeapData, HeapId},
     resource::{ResourceError, ResourceTracker},
     types::{
-        LongInt, NamedTuple, Path, PyTrait, TimeZone, Type, allocate_tuple,
+        Dataclass, LongInt, NamedTuple, Path, PyTrait, TimeZone, Type, allocate_tuple,
         bytes::{Bytes, bytes_repr},
         date as date_type, datetime as datetime_type,
         dict::Dict,
@@ -503,7 +503,6 @@ impl MontyObject {
                 attrs,
                 frozen,
             } => {
-                use crate::types::Dataclass;
                 // Convert attrs to Dict
                 let pairs: Result<Vec<(Value, Value)>, InvalidInputError> = attrs
                     .into_iter()
@@ -736,7 +735,7 @@ impl MontyObject {
             Value::Builtin(Builtins::Type(t)) => Self::Type(*t),
             Value::Builtin(Builtins::ExcType(e)) => Self::Type(Type::Exception(*e)),
             Value::Builtin(Builtins::Function(f)) => Self::BuiltinFunction(*f),
-            #[cfg(feature = "ref-count-panic")]
+            #[cfg(feature = "memory-model-checks")]
             Value::Dereferenced => panic!("Dereferenced found while converting to MontyObject"),
             _ => repr_or_error(object, vm),
         }

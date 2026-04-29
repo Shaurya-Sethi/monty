@@ -4,7 +4,14 @@
 //! normalized `(days, seconds, microseconds)` semantics for constructors, arithmetic,
 //! and formatting.
 
-use std::{borrow::Cow, cmp::Ordering, fmt::Write, mem};
+use std::{
+    borrow::Cow,
+    cmp::Ordering,
+    collections::hash_map::DefaultHasher,
+    fmt::Write,
+    hash::{Hash, Hasher},
+    mem,
+};
 
 use ahash::AHashSet;
 use chrono::TimeDelta as ChronoTimeDelta;
@@ -331,15 +338,21 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TimeDelta> {
     }
 
     fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<bool, ResourceError> {
-        Ok(total_microseconds(self.get(vm)) == total_microseconds(other.get(vm)))
+        Ok(total_microseconds(self.get(&vm.heap)) == total_microseconds(other.get(&vm.heap)))
+    }
+
+    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<u64>, ResourceError> {
+        let mut hasher = DefaultHasher::new();
+        self.get(&vm.heap).hash(&mut hasher);
+        Ok(Some(hasher.finish()))
     }
 
     fn py_cmp(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<Ordering>, ResourceError> {
-        Ok(total_microseconds(self.get(vm)).partial_cmp(&total_microseconds(other.get(vm))))
+        Ok(total_microseconds(self.get(&vm.heap)).partial_cmp(&total_microseconds(other.get(&vm.heap))))
     }
 
     fn py_bool(&self, vm: &mut VM<'h, impl ResourceTracker>) -> bool {
-        total_microseconds(self.get(vm)) != 0
+        total_microseconds(self.get(&vm.heap)) != 0
     }
 
     fn py_repr_fmt(
@@ -348,12 +361,12 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TimeDelta> {
         vm: &VM<'h, impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
-        f.write_str(&format_repr(self.get(vm)))?;
+        f.write_str(&format_repr(self.get(&vm.heap)))?;
         Ok(())
     }
 
     fn py_str(&self, vm: &VM<'h, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
-        let (days, seconds, microseconds) = components(self.get(vm));
+        let (days, seconds, microseconds) = components(self.get(&vm.heap));
         let hours = seconds / SECONDS_PER_HOUR;
         let minutes = (seconds % SECONDS_PER_HOUR) / SECONDS_PER_MINUTE;
         let second = seconds % SECONDS_PER_MINUTE;
@@ -380,7 +393,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TimeDelta> {
     ) -> RunResult<CallResult> {
         if attr.string_id() == Some(StaticStrings::TotalSeconds.into()) {
             // Copy the TimeDelta to release the HeapRead borrow before checking args
-            let td = *self.get(vm);
+            let td = *self.get(&vm.heap);
             args.check_zero_args("timedelta.total_seconds", &mut vm.heap)?;
             return Ok(CallResult::Value(Value::Float(total_seconds(&td))));
         }
@@ -388,7 +401,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TimeDelta> {
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
-        let (days, seconds, microseconds) = components(self.get(vm));
+        let (days, seconds, microseconds) = components(self.get(&vm.heap));
         match attr.string_id() {
             Some(id) if id == StaticStrings::Days => Ok(Some(CallResult::Value(Value::Int(i64::from(days))))),
             Some(id) if id == StaticStrings::Seconds => Ok(Some(CallResult::Value(Value::Int(i64::from(seconds))))),

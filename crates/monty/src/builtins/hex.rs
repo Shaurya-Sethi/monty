@@ -21,7 +21,7 @@ use crate::{
 pub fn builtin_hex(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let value = args.get_one_arg("hex", &mut vm.heap)?;
     defer_drop!(value, vm);
-    let heap = &mut *vm.heap;
+    let heap = &mut vm.heap;
 
     match value {
         Value::Int(n) => {
@@ -35,14 +35,10 @@ pub fn builtin_hex(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Ru
             let heap_id = heap.allocate(HeapData::Str(Str::new(s.to_string())))?;
             Ok(Value::Ref(heap_id))
         }
-        Value::Ref(id) => {
-            if let HeapData::LongInt(li) = heap.get(*id) {
-                let hex_str = format_bigint_hex(li.inner());
-                let heap_id = heap.allocate(HeapData::Str(Str::new(hex_str)))?;
-                Ok(Value::Ref(heap_id))
-            } else {
-                Err(ExcType::type_error_not_integer(value.py_type(vm)))
-            }
+        Value::Ref(id) if let HeapData::LongInt(li) = heap.get(*id) => {
+            let hex_str = format_bigint_hex(li.inner());
+            let heap_id = heap.allocate(HeapData::Str(Str::new(hex_str)))?;
+            Ok(Value::Ref(heap_id))
         }
         _ => Err(ExcType::type_error_not_integer(value.py_type(vm))),
     }

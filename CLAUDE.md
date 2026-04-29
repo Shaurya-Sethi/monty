@@ -27,7 +27,7 @@ Key rules:
 - Avoid `#[cfg(unix)]`-only code in the main crate — all features must work on all platforms
 - Tests in `crates/monty/tests/` should be cross-platform; use helper functions for
   OS-specific APIs like symlink creation (see `symlink_file`/`symlink_dir` in `fs_security.rs`)
-- CI runs `cargo test -p monty --features ref-count-panic` on Linux, macOS, and Windows
+- CI runs `cargo test -p monty --features memory-model-checks` on Linux, macOS, and Windows
 
 ## Important Security Notice
 
@@ -230,7 +230,7 @@ make lint                 Lint the code with ruff and clippy
 make format-lint-rs       Format and lint Rust code with fmt and clippy
 make format-lint-py       Format and lint Python code with ruff
 make test-no-features     Run rust tests without any features enabled
-make test-ref-count-panic Run rust tests with ref-count-panic enabled
+make test-memory-model-checks Run rust tests with memory-model-checks enabled
 make test-ref-count-return Run rust tests with ref-count-return enabled
 make test-cases           Run tests cases only
 make test-type-checking   Run rust tests on monty_type_checking
@@ -335,15 +335,15 @@ Commands:
 # Build the project
 cargo build
 
-# Run tests (this is the best way to run all tests as it enables the ref-count-panic feature)
-make test-ref-count-panic
+# Run tests (this is the best way to run all tests as it enables the memory-model-checks feature)
+make test-memory-model-checks
 
 # Run crates/monty/test_cases tests only
 make test-cases
 
 # Run a specific test
-cargo test -p monty --test TEST --features ref-count-panic str__ops
-cargo run -p monty-datatest --features ref-count-panic str__ops
+cargo test -p monty --test TEST --features memory-model-checks str__ops
+cargo run -p monty-datatest --features memory-model-checks str__ops
 
 # Run the interpreter on a Python file
 cargo run -- <file.py>
@@ -492,6 +492,14 @@ All these markers must be at the start of comment lines to be recognized.
 - Run `make lint-py` after adding tests
 - Use `make complete-tests` to fill in blank expectations
 - Regression tests run via `datatest-stable` harness in `crates/monty-datatest/src/main.rs`, use `make test-cases` to run them
+
+### Rust integration tests and `insta` snapshots
+
+In `crates/*/tests/*.rs` (but **not** `crates/monty/test_cases/`), use [`insta`](https://insta.rs) `assert_snapshot!` for multi-line strings, serialized output, error messages otherwise fuzz-checked via `.contains(...)`, and any fixture currently compared via a hand-rolled `UPDATE_EXPECT` helper (use external snapshots under `tests/snapshots/`).
+
+Keep `assert_eq!` for scalars, enums, and structural values (`MontyObject`, `Vec`, etc.), and for principled membership checks like `vec.contains(...)`.
+
+Workflow: write `assert_snapshot!(value, @"");`, then `cargo insta test --accept` to populate (plain `INSTA_UPDATE=always` does **not** update inline `@"..."` snapshots — you need the `cargo insta` subcommand, installed via `cargo install cargo-insta`). Add `insta = { workspace = true }` to `[dev-dependencies]` when introducing it to a new crate.
 
 ## Python Package (`pydantic-monty`)
 

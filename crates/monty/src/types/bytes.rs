@@ -65,7 +65,14 @@
 /// - `expandtabs(tabsize=8)` - Tab expansion
 /// - `translate(table[, delete])` - Character translation
 /// - `maketrans(frm, to)` - Create translation table (staticmethod)
-use std::{cmp::Ordering, fmt, fmt::Write, mem, ops, str};
+use std::{
+    cmp::Ordering,
+    collections::hash_map::DefaultHasher,
+    fmt,
+    fmt::Write,
+    hash::{Hash, Hasher},
+    mem, ops, str,
+};
 
 use ahash::AHashSet;
 use smallvec::smallvec;
@@ -79,7 +86,10 @@ use crate::{
     heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, heap_read_ref_as_field},
     intern::{StaticStrings, StringId},
     resource::{ResourceError, ResourceTracker, check_repeat_size, check_replace_size},
-    types::List,
+    types::{
+        List,
+        slice::{normalize_sequence_index, slice_collect_iterator},
+    },
     value::{EitherStr, Value},
 };
 
@@ -111,50 +121,6 @@ pub fn get_byte_at_index(bytes: &[u8], index: i64) -> Option<u8> {
 
     let idx = usize::try_from(normalized).ok()?;
     Some(bytes[idx])
-}
-
-/// Extracts a slice of a byte array.
-///
-/// Handles both positive and negative step values. For negative step,
-/// iterates backward from start down to (but not including) stop.
-/// The `stop` parameter uses a sentinel value of `len + 1` for negative
-/// step to indicate "go to the beginning".
-///
-/// Note: step must be non-zero (callers should validate this via `slice.indices()`).
-pub(crate) fn get_bytes_slice(bytes: &[u8], start: usize, stop: usize, step: i64) -> Vec<u8> {
-    let mut result = Vec::new();
-
-    // try_from succeeds for non-negative step; step==0 rejected upstream by slice.indices()
-    if let Ok(step_usize) = usize::try_from(step) {
-        // Positive step: iterate forward
-        let mut i = start;
-        while i < stop && i < bytes.len() {
-            result.push(bytes[i]);
-            i += step_usize;
-        }
-    } else {
-        // Negative step: iterate backward
-        // start is the highest index, stop is the sentinel
-        // stop > bytes.len() means "go to the beginning"
-        let step_abs = usize::try_from(-step).expect("step is negative so -step is positive");
-        let step_abs_i64 = i64::try_from(step_abs).expect("step magnitude fits in i64");
-        let mut i = i64::try_from(start).expect("start index fits in i64");
-        let stop_i64 = if stop > bytes.len() {
-            -1
-        } else {
-            i64::try_from(stop).expect("stop bounded by bytes.len() fits in i64")
-        };
-
-        while let Ok(i_usize) = usize::try_from(i) {
-            if i_usize >= bytes.len() || i <= stop_i64 {
-                break;
-            }
-            result.push(bytes[i_usize]);
-            i -= step_abs_i64;
-        }
-    }
-
-    result
 }
 
 /// Python bytes value stored on the heap.
@@ -249,7 +215,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Bytes> {
     }
 
     fn py_len(&self, vm: &VM<'h, impl ResourceTracker>) -> Option<usize> {
-        Some(self.get(vm).0.len())
+        Some(self.get(&vm.heap).0.len())
     }
 
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
@@ -257,12 +223,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Bytes> {
         if let Value::Ref(id) = key
             && let HeapData::Slice(slice) = vm.heap.get(*id)
         {
-            let b = self.get(vm);
-            let (start, stop, step) = slice
-                .indices(b.0.len())
-                .map_err(|()| ExcType::value_error_slice_step_zero())?;
-
-            let sliced_bytes = get_bytes_slice(&b.0, start, stop, step);
+            let b = self.get(&vm.heap);
+            let sliced_bytes = slice_collect_iterator(vm, slice, b.0.iter(), |b| *b)?;
             let heap_id = vm.heap.allocate(HeapData::Bytes(Bytes::new(sliced_bytes)))?;
             return Ok(Value::Ref(heap_id));
         }
@@ -271,21 +233,29 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Bytes> {
         let index = key.as_index(vm, Type::Bytes)?;
 
         // Use helper for byte indexing
-        let b = self.get(vm);
+        let b = self.get(&vm.heap);
         let byte = get_byte_at_index(&b.0, index).ok_or_else(ExcType::bytes_index_error)?;
         Ok(Value::Int(i64::from(byte)))
     }
 
     fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<bool, ResourceError> {
-        Ok(self.get(vm).0 == other.get(vm).0)
+        Ok(self.get(&vm.heap).0 == other.get(&vm.heap).0)
+    }
+
+    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<u64>, ResourceError> {
+        // Must match `Value::InternBytes` so the same content hashes equally
+        // regardless of whether the bytes live on the heap or in the intern table.
+        let mut hasher = DefaultHasher::new();
+        self.get(&vm.heap).as_slice().hash(&mut hasher);
+        Ok(Some(hasher.finish()))
     }
 
     fn py_cmp(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<Ordering>, ResourceError> {
-        Ok(Some(self.get(vm).0.cmp(&other.get(vm).0)))
+        Ok(Some(self.get(&vm.heap).0.cmp(&other.get(&vm.heap).0)))
     }
 
     fn py_bool(&self, vm: &mut VM<'h, impl ResourceTracker>) -> bool {
-        !self.get(vm).0.is_empty()
+        !self.get(&vm.heap).0.is_empty()
     }
 
     fn py_repr_fmt(
@@ -294,7 +264,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Bytes> {
         vm: &VM<'h, impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
-        Ok(bytes_repr_fmt(&self.get(vm).0, f)?)
+        Ok(bytes_repr_fmt(&self.get(&vm.heap).0, f)?)
     }
 
     fn py_call_attr(
@@ -310,7 +280,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Bytes> {
         };
 
         let field = heap_read_ref_as_field!(self, Bytes, 0);
-        let bytes = field.as_slice(vm);
+        let bytes = field.as_slice(&vm.heap);
         call_bytes_method_impl(&bytes, method, args, vm).map(CallResult::Value)
     }
 }
@@ -380,35 +350,35 @@ fn call_bytes_method_impl<'h>(
         // Predicate methods (no arguments, return bool)
         StaticStrings::Isalpha => {
             args.check_zero_args("bytes.isalpha", &mut vm.heap)?;
-            Ok(Value::Bool(bytes_isalpha(bytes.get(vm))))
+            Ok(Value::Bool(bytes_isalpha(bytes.get(&vm.heap))))
         }
         StaticStrings::Isdigit => {
             args.check_zero_args("bytes.isdigit", &mut vm.heap)?;
-            Ok(Value::Bool(bytes_isdigit(bytes.get(vm))))
+            Ok(Value::Bool(bytes_isdigit(bytes.get(&vm.heap))))
         }
         StaticStrings::Isalnum => {
             args.check_zero_args("bytes.isalnum", &mut vm.heap)?;
-            Ok(Value::Bool(bytes_isalnum(bytes.get(vm))))
+            Ok(Value::Bool(bytes_isalnum(bytes.get(&vm.heap))))
         }
         StaticStrings::Isspace => {
             args.check_zero_args("bytes.isspace", &mut vm.heap)?;
-            Ok(Value::Bool(bytes_isspace(bytes.get(vm))))
+            Ok(Value::Bool(bytes_isspace(bytes.get(&vm.heap))))
         }
         StaticStrings::Islower => {
             args.check_zero_args("bytes.islower", &mut vm.heap)?;
-            Ok(Value::Bool(bytes_islower(bytes.get(vm))))
+            Ok(Value::Bool(bytes_islower(bytes.get(&vm.heap))))
         }
         StaticStrings::Isupper => {
             args.check_zero_args("bytes.isupper", &mut vm.heap)?;
-            Ok(Value::Bool(bytes_isupper(bytes.get(vm))))
+            Ok(Value::Bool(bytes_isupper(bytes.get(&vm.heap))))
         }
         StaticStrings::Isascii => {
             args.check_zero_args("bytes.isascii", &mut vm.heap)?;
-            Ok(Value::Bool(bytes.get(vm).iter().all(|&b| b <= 127)))
+            Ok(Value::Bool(bytes.get(&vm.heap).iter().all(|&b| b <= 127)))
         }
         StaticStrings::Istitle => {
             args.check_zero_args("bytes.istitle", &mut vm.heap)?;
-            Ok(Value::Bool(bytes_istitle(bytes.get(vm))))
+            Ok(Value::Bool(bytes_istitle(bytes.get(&vm.heap))))
         }
         // Search methods
         StaticStrings::Count => bytes_count(bytes, args, vm),
@@ -446,7 +416,7 @@ fn call_bytes_method_impl<'h>(
         // fromhex is a classmethod but also accessible on instances
         StaticStrings::Fromhex => bytes_fromhex(args, vm),
         _ => {
-            args.drop_with_heap(vm);
+            args.drop_with_heap(&mut vm.heap);
             Err(ExcType::attribute_error(Type::Bytes, method.into()))
         }
     }
@@ -521,7 +491,7 @@ fn bytes_decode<'h>(
     }
 
     // Decode as UTF-8
-    match str::from_utf8(bytes.get(vm)) {
+    match str::from_utf8(bytes.get(&vm.heap)) {
         Ok(s) => {
             let heap_id = vm.heap.allocate(HeapData::Str(Str::from(s.to_owned())))?;
             Ok(Value::Ref(heap_id))
@@ -553,10 +523,10 @@ fn bytes_count<'h>(
     args: ArgValues,
     vm: &mut VM<'h, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let len = bytes.get(vm).len();
+    let len = bytes.get(&vm.heap).len();
     let (sub, start, end) = parse_bytes_sub_args("bytes.count", len, args, vm)?;
 
-    let slice = &bytes.get(vm)[start..end];
+    let slice = &bytes.get(&vm.heap)[start..end];
     let count = if sub.is_empty() {
         // Empty subsequence: count positions between each byte plus 1
         slice.len() + 1
@@ -591,10 +561,10 @@ fn bytes_find<'h>(
     args: ArgValues,
     vm: &mut VM<'h, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let len = bytes.get(vm).len();
+    let len = bytes.get(&vm.heap).len();
     let (sub, start, end) = parse_bytes_sub_args("bytes.find", len, args, vm)?;
 
-    let slice = &bytes.get(vm)[start..end];
+    let slice = &bytes.get(&vm.heap)[start..end];
     let result = if sub.is_empty() {
         // Empty subsequence: always found at start position
         Some(0)
@@ -622,10 +592,10 @@ fn bytes_index<'h>(
     args: ArgValues,
     vm: &mut VM<'h, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let len = bytes.get(vm).len();
+    let len = bytes.get(&vm.heap).len();
     let (sub, start, end) = parse_bytes_sub_args("bytes.index", len, args, vm)?;
 
-    let slice = &bytes.get(vm)[start..end];
+    let slice = &bytes.get(&vm.heap)[start..end];
     let result = if sub.is_empty() {
         // Empty subsequence: always found at start position
         Some(0)
@@ -652,10 +622,10 @@ fn bytes_startswith<'h>(
     args: ArgValues,
     vm: &mut VM<'h, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let len = bytes.get(vm).len();
+    let len = bytes.get(&vm.heap).len();
     let (prefix_arg, start, end) = parse_bytes_prefix_suffix_args("bytes.startswith", len, args, vm)?;
 
-    let slice = &bytes.get(vm)[start..end];
+    let slice = &bytes.get(&vm.heap)[start..end];
     let result = match prefix_arg {
         PrefixSuffixArg::Single(prefix_bytes) => slice.starts_with(&prefix_bytes),
         PrefixSuffixArg::Multiple(prefixes) => prefixes.iter().any(|p| slice.starts_with(p)),
@@ -673,10 +643,10 @@ fn bytes_endswith<'h>(
     args: ArgValues,
     vm: &mut VM<'h, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let len = bytes.get(vm).len();
+    let len = bytes.get(&vm.heap).len();
     let (suffix_arg, start, end) = parse_bytes_prefix_suffix_args("bytes.endswith", len, args, vm)?;
 
-    let slice = &bytes.get(vm)[start..end];
+    let slice = &bytes.get(&vm.heap)[start..end];
     let result = match suffix_arg {
         PrefixSuffixArg::Single(suffix_bytes) => slice.ends_with(&suffix_bytes),
         PrefixSuffixArg::Multiple(suffixes) => suffixes.iter().any(|s| slice.ends_with(s)),
@@ -716,13 +686,13 @@ fn parse_bytes_prefix_suffix_args(
         }
         [prefix_value, start_value] => {
             let prefix = extract_bytes_for_prefix_suffix(prefix_value, method, vm)?;
-            let start = normalize_bytes_index(start_value.as_int(vm)?, len);
+            let start = normalize_sequence_index(start_value.as_int(vm)?, len);
             (prefix, start, len)
         }
         [prefix_value, start_value, end_value] => {
             let prefix = extract_bytes_for_prefix_suffix(prefix_value, method, vm)?;
-            let start = normalize_bytes_index(start_value.as_int(vm)?, len);
-            let end = normalize_bytes_index(end_value.as_int(vm)?, len);
+            let start = normalize_sequence_index(start_value.as_int(vm)?, len);
+            let end = normalize_sequence_index(end_value.as_int(vm)?, len);
             (prefix, start, end)
         }
         [] => return Err(ExcType::type_error_at_least(method, 1, 0)),
@@ -834,13 +804,13 @@ fn parse_bytes_sub_args(
         }
         [sub_value, start_value] => {
             let sub = extract_bytes_only(sub_value, vm)?;
-            let start = normalize_bytes_index(start_value.as_int(vm)?, len);
+            let start = normalize_sequence_index(start_value.as_int(vm)?, len);
             (sub, start, len)
         }
         [sub_value, start_value, end_value] => {
             let sub = extract_bytes_only(sub_value, vm)?;
-            let start = normalize_bytes_index(start_value.as_int(vm)?, len);
-            let end = normalize_bytes_index(end_value.as_int(vm)?, len);
+            let start = normalize_sequence_index(start_value.as_int(vm)?, len);
+            let end = normalize_sequence_index(end_value.as_int(vm)?, len);
             (sub, start, end)
         }
         [] => return Err(ExcType::type_error_at_least(method, 1, 0)),
@@ -851,16 +821,6 @@ fn parse_bytes_sub_args(
     Ok((sub.to_owned(), start, end.max(start)))
 }
 
-/// Normalizes a Python-style bytes index to a valid index in range [0, len].
-fn normalize_bytes_index(index: i64, len: usize) -> usize {
-    if index < 0 {
-        let abs_index = usize::try_from(-index).unwrap_or(usize::MAX);
-        len.saturating_sub(abs_index)
-    } else {
-        usize::try_from(index).unwrap_or(len).min(len)
-    }
-}
-
 // =============================================================================
 // Simple transformations (no arguments)
 // =============================================================================
@@ -869,7 +829,7 @@ fn normalize_bytes_index(index: i64, len: usize) -> usize {
 ///
 /// Returns a copy of the bytes with all ASCII uppercase characters converted to lowercase.
 fn bytes_lower<'h>(bytes: &HeapRead<'h, [u8]>, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
-    let result: Vec<u8> = bytes.get(vm).iter().map(|&b| b.to_ascii_lowercase()).collect();
+    let result: Vec<u8> = bytes.get(&vm.heap).iter().map(|&b| b.to_ascii_lowercase()).collect();
     allocate_bytes(result, &vm.heap)
 }
 
@@ -877,7 +837,7 @@ fn bytes_lower<'h>(bytes: &HeapRead<'h, [u8]>, vm: &mut VM<'h, impl ResourceTrac
 ///
 /// Returns a copy of the bytes with all ASCII lowercase characters converted to uppercase.
 fn bytes_upper<'h>(bytes: &HeapRead<'h, [u8]>, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
-    let result: Vec<u8> = bytes.get(vm).iter().map(|&b| b.to_ascii_uppercase()).collect();
+    let result: Vec<u8> = bytes.get(&vm.heap).iter().map(|&b| b.to_ascii_uppercase()).collect();
     allocate_bytes(result, &vm.heap)
 }
 
@@ -886,7 +846,7 @@ fn bytes_upper<'h>(bytes: &HeapRead<'h, [u8]>, vm: &mut VM<'h, impl ResourceTrac
 /// Returns a copy of the bytes with the first byte capitalized (if ASCII) and
 /// the rest lowercased.
 fn bytes_capitalize<'h>(bytes: &HeapRead<'h, [u8]>, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
-    let bytes = bytes.get(vm);
+    let bytes = bytes.get(&vm.heap);
     let mut result = Vec::with_capacity(bytes.len());
     if let Some((&first, rest)) = bytes.split_first() {
         result.push(first.to_ascii_uppercase());
@@ -902,7 +862,7 @@ fn bytes_capitalize<'h>(bytes: &HeapRead<'h, [u8]>, vm: &mut VM<'h, impl Resourc
 /// Returns a titlecased version of the bytes where words start with an uppercase
 /// ASCII character and the remaining characters are lowercase.
 fn bytes_title<'h>(bytes: &HeapRead<'h, [u8]>, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
-    let bytes = bytes.get(vm);
+    let bytes = bytes.get(&vm.heap);
     let mut result = Vec::with_capacity(bytes.len());
     let mut prev_is_cased = false;
 
@@ -924,7 +884,7 @@ fn bytes_title<'h>(bytes: &HeapRead<'h, [u8]>, vm: &mut VM<'h, impl ResourceTrac
 /// lowercase and vice versa.
 fn bytes_swapcase<'h>(bytes: &HeapRead<'h, [u8]>, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
     let result: Vec<u8> = bytes
-        .get(vm)
+        .get(&vm.heap)
         .iter()
         .map(|&b| {
             if b.is_ascii_uppercase() {
@@ -1048,10 +1008,10 @@ fn bytes_rfind<'h>(
     args: ArgValues,
     vm: &mut VM<'h, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let len = bytes.get(vm).len();
+    let len = bytes.get(&vm.heap).len();
     let (sub, start, end) = parse_bytes_sub_args("bytes.rfind", len, args, vm)?;
 
-    let slice = &bytes.get(vm)[start..end];
+    let slice = &bytes.get(&vm.heap)[start..end];
     let result = if sub.is_empty() {
         // Empty subsequence: always found at end position
         Some(slice.len())
@@ -1082,10 +1042,10 @@ fn bytes_rindex<'h>(
     args: ArgValues,
     vm: &mut VM<'h, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let len = bytes.get(vm).len();
+    let len = bytes.get(&vm.heap).len();
     let (sub, start, end) = parse_bytes_sub_args("bytes.rindex", len, args, vm)?;
 
-    let slice = &bytes.get(vm)[start..end];
+    let slice = &bytes.get(&vm.heap)[start..end];
     let result = if sub.is_empty() {
         Some(slice.len())
     } else {
@@ -1117,8 +1077,8 @@ fn bytes_strip<'h>(
     let value = args.get_zero_one_arg("bytes.strip", &mut vm.heap)?;
     defer_drop!(value, vm);
     let result = match value {
-        None | Some(Value::None) => bytes_strip_whitespace_both(bytes.get(vm)),
-        Some(v) => bytes_strip_both(bytes.get(vm), extract_bytes_only(v, vm)?),
+        None | Some(Value::None) => bytes_strip_whitespace_both(bytes.get(&vm.heap)),
+        Some(v) => bytes_strip_both(bytes.get(&vm.heap), extract_bytes_only(v, vm)?),
     };
     allocate_bytes(result.to_vec(), &vm.heap)
 }
@@ -1134,8 +1094,8 @@ fn bytes_lstrip<'h>(
     let value = args.get_zero_one_arg("bytes.lstrip", &mut vm.heap)?;
     defer_drop!(value, vm);
     let result = match value {
-        None | Some(Value::None) => bytes_strip_whitespace_start(bytes.get(vm)),
-        Some(v) => bytes_strip_start(bytes.get(vm), extract_bytes_only(v, vm)?),
+        None | Some(Value::None) => bytes_strip_whitespace_start(bytes.get(&vm.heap)),
+        Some(v) => bytes_strip_start(bytes.get(&vm.heap), extract_bytes_only(v, vm)?),
     };
     allocate_bytes(result.to_vec(), &vm.heap)
 }
@@ -1151,8 +1111,8 @@ fn bytes_rstrip<'h>(
     let value = args.get_zero_one_arg("bytes.rstrip", &mut vm.heap)?;
     defer_drop!(value, vm);
     let result = match value {
-        None | Some(Value::None) => bytes_strip_whitespace_end(bytes.get(vm)),
-        Some(v) => bytes_strip_end(bytes.get(vm), extract_bytes_only(v, vm)?),
+        None | Some(Value::None) => bytes_strip_whitespace_end(bytes.get(&vm.heap)),
+        Some(v) => bytes_strip_end(bytes.get(&vm.heap), extract_bytes_only(v, vm)?),
     };
     allocate_bytes(result.to_vec(), &vm.heap)
 }
@@ -1217,7 +1177,7 @@ fn bytes_removeprefix<'h>(
     defer_drop!(prefix_value, vm);
     let prefix = extract_bytes_only(prefix_value, vm)?;
 
-    let bytes = bytes.get(vm);
+    let bytes = bytes.get(&vm.heap);
     let result = if bytes.starts_with(prefix) {
         bytes[prefix.len()..].to_vec()
     } else {
@@ -1239,7 +1199,7 @@ fn bytes_removesuffix<'h>(
     defer_drop!(suffix_value, vm);
     let suffix = extract_bytes_only(suffix_value, vm)?;
 
-    let bytes = bytes.get(vm);
+    let bytes = bytes.get(&vm.heap);
     let result = if bytes.ends_with(suffix) && !suffix.is_empty() {
         bytes[..bytes.len() - suffix.len()].to_vec()
     } else {
@@ -1262,7 +1222,7 @@ fn bytes_split<'h>(
 ) -> RunResult<Value> {
     let (sep, maxsplit) = parse_bytes_split_args("bytes.split", args, vm)?;
 
-    let bytes = bytes.get(vm);
+    let bytes = bytes.get(&vm.heap);
     let parts: Vec<&[u8]> = match &sep {
         Some(sep) => {
             if sep.is_empty() {
@@ -1306,7 +1266,7 @@ fn bytes_rsplit<'h>(
 ) -> RunResult<Value> {
     let (sep, maxsplit) = parse_bytes_split_args("bytes.rsplit", args, vm)?;
 
-    let bytes = bytes.get(vm);
+    let bytes = bytes.get(&vm.heap);
     let parts: Vec<&[u8]> = match &sep {
         Some(sep) => {
             if sep.is_empty() {
@@ -1568,7 +1528,7 @@ fn bytes_splitlines<'h>(
 
     let mut lines = Vec::new();
     let mut start = 0;
-    let bytes = bytes.get(vm);
+    let bytes = bytes.get(&vm.heap);
     let len = bytes.len();
 
     while start < len {
@@ -1618,7 +1578,7 @@ fn parse_bytes_splitlines_args(args: ArgValues, vm: &mut VM<'_, impl ResourceTra
     let val = args.get_zero_one_named_arg("bytes.splitlines", StaticStrings::Keepends, &mut vm.heap, vm.interns)?;
     let keepends = if let Some(v) = val {
         let result = v.py_bool(vm);
-        v.drop_with_heap(vm);
+        v.drop_with_heap(&mut vm.heap);
         result
     } else {
         false
@@ -1642,7 +1602,7 @@ fn bytes_partition<'h>(
         return Err(ExcType::value_error_empty_separator());
     }
 
-    let bytes = bytes.get(vm);
+    let bytes = bytes.get(&vm.heap);
     let (before, sep_found, after) = match find_subsequence(bytes, sep) {
         Some(pos) => (bytes[..pos].to_vec(), sep.to_vec(), bytes[pos + sep.len()..].to_vec()),
         None => (bytes.to_vec(), Vec::new(), Vec::new()),
@@ -1674,7 +1634,7 @@ fn bytes_rpartition<'h>(
         return Err(ExcType::value_error_empty_separator());
     }
 
-    let bytes = bytes.get(vm);
+    let bytes = bytes.get(&vm.heap);
     let (before, sep_found, after) = match rfind_subsequence(bytes, sep) {
         Some(pos) => (bytes[..pos].to_vec(), sep.to_vec(), bytes[pos + sep.len()..].to_vec()),
         None => (Vec::new(), Vec::new(), bytes.to_vec()),
@@ -1704,7 +1664,7 @@ fn bytes_replace<'h>(
 ) -> RunResult<Value> {
     let (old, new, count) = parse_bytes_replace_args("bytes.replace", args, vm)?;
 
-    let bytes = bytes.get(vm);
+    let bytes = bytes.get(&vm.heap);
 
     check_replace_size(bytes.len(), old.len(), new.len(), count, vm.heap.tracker())?;
 
@@ -1877,7 +1837,7 @@ fn bytes_center<'h>(
 ) -> RunResult<Value> {
     let (width, fillbyte) = parse_bytes_justify_args("bytes.center", args, vm)?;
 
-    let bytes = bytes.get(vm);
+    let bytes = bytes.get(&vm.heap);
     let len = bytes.len();
 
     let result = if width <= len {
@@ -1911,7 +1871,7 @@ fn bytes_ljust<'h>(
 ) -> RunResult<Value> {
     let (width, fillbyte) = parse_bytes_justify_args("bytes.ljust", args, vm)?;
 
-    let bytes = bytes.get(vm);
+    let bytes = bytes.get(&vm.heap);
     let len = bytes.len();
 
     let result = if width <= len {
@@ -1940,7 +1900,7 @@ fn bytes_rjust<'h>(
 ) -> RunResult<Value> {
     let (width, fillbyte) = parse_bytes_justify_args("bytes.rjust", args, vm)?;
 
-    let bytes = bytes.get(vm);
+    let bytes = bytes.get(&vm.heap);
     let len = bytes.len();
 
     let result = if width <= len {
@@ -2014,7 +1974,7 @@ fn bytes_zfill<'h>(
         usize::try_from(width_i64).unwrap_or(usize::MAX)
     };
 
-    let bytes = bytes.get(vm);
+    let bytes = bytes.get(&vm.heap);
     let len = bytes.len();
 
     let result = if width <= len {
@@ -2063,7 +2023,7 @@ fn bytes_join<'h>(
         defer_drop!(item, vm);
 
         if index > 0 {
-            result.extend_from_slice(separator.get(vm));
+            result.extend_from_slice(separator.get(&vm.heap));
         }
 
         // Check item is bytes and extract its content
@@ -2108,7 +2068,7 @@ fn bytes_hex<'h>(
 ) -> RunResult<Value> {
     let (sep, bytes_per_sep) = parse_bytes_hex_args(args, vm)?;
 
-    let bytes = bytes.get(vm);
+    let bytes = bytes.get(&vm.heap);
     let hex_chars: Vec<char> = bytes
         .iter()
         .flat_map(|b| {

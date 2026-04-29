@@ -14,7 +14,13 @@
 /// - `count(value)` - Count occurrences
 ///
 /// All tuple methods from Python's builtins are implemented.
-use std::{cmp::Ordering, fmt::Write, mem};
+use std::{
+    cmp::Ordering,
+    collections::hash_map::DefaultHasher,
+    fmt::Write,
+    hash::{Hash, Hasher},
+    mem,
+};
 
 use ahash::AHashSet;
 use smallvec::SmallVec;
@@ -30,7 +36,8 @@ use crate::{
     resource::{ResourceError, ResourceTracker},
     types::{
         Type,
-        list::{get_slice_items, repr_sequence_fmt},
+        list::repr_sequence_fmt,
+        slice::{normalize_sequence_index, slice_collect_iterator},
     },
     value::{EitherStr, Value},
 };
@@ -157,12 +164,12 @@ pub fn allocate_tuple(
 impl<'h> HeapRead<'h, Tuple> {
     /// Clones the item at the given index with proper refcount management.
     pub(crate) fn clone_item(&self, index: usize, vm: &mut VM<'h, impl ResourceTracker>) -> Value {
-        self.get(vm).items[index].clone_with_heap(vm)
+        self.get(&vm.heap).items[index].clone_with_heap(vm)
     }
 
     /// Clones all items from this tuple with proper refcount management.
     fn clone_all_items(&self, vm: &mut VM<'h, impl ResourceTracker>) -> TupleVec {
-        let len = self.get(vm).items.len();
+        let len = self.get(&vm.heap).items.len();
         let mut result = TupleVec::with_capacity(len);
         for i in 0..len {
             result.push(self.clone_item(i, vm));
@@ -177,7 +184,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
     }
 
     fn py_len(&self, vm: &VM<'h, impl ResourceTracker>) -> Option<usize> {
-        Some(self.get(vm).items.len())
+        Some(self.get(&vm.heap).items.len())
     }
 
     fn py_getitem(&self, key: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
@@ -185,16 +192,15 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
         if let Value::Ref(key_id) = key
             && let HeapData::Slice(slice_obj) = vm.heap.get(*key_id)
         {
-            let (start, stop, step) = slice_obj
-                .indices(self.get(vm).items.len())
-                .map_err(|()| ExcType::value_error_slice_step_zero())?;
-            let items = get_slice_items(&self.get(vm).items, start, stop, step, &vm.heap)?;
-            return Ok(allocate_tuple(items.into(), &vm.heap)?);
+            let items = slice_collect_iterator(vm, slice_obj, self.get(&vm.heap).items.iter(), |v| {
+                v.clone_with_heap(vm)
+            })?;
+            return Ok(allocate_tuple(items, &vm.heap)?);
         }
 
         // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt
         let index = key.as_index(vm, Type::Tuple)?;
-        let len = self.get(vm).as_slice().len();
+        let len = self.get(&vm.heap).as_slice().len();
         let len_i64 = i64::try_from(len).expect("tuple length exceeds i64::MAX");
         let normalized = if index < 0 { index + len_i64 } else { index };
 
@@ -207,8 +213,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
     }
 
     fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<bool, ResourceError> {
-        let a_len = self.get(vm).items.len();
-        if a_len != other.get(vm).items.len() {
+        let a_len = self.get(&vm.heap).items.len();
+        if a_len != other.get(&vm.heap).items.len() {
             return Ok(false);
         }
         let token = vm.heap.incr_recursion_depth()?;
@@ -227,6 +233,27 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
         Ok(true)
     }
 
+    /// Hashes the tuple as the combined hash of its elements.
+    ///
+    /// Identical to `NamedTuple::py_hash`, so a `Tuple` and a `NamedTuple` with
+    /// the same elements hash equally — required because they compare equal
+    /// (matching CPython, where `NamedTuple` is a `tuple` subclass).
+    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<u64>, ResourceError> {
+        let token = vm.heap.incr_recursion_depth()?;
+        defer_drop!(token, vm);
+        let len = self.get(&vm.heap).items.len();
+        let mut hasher = DefaultHasher::new();
+        for i in 0..len {
+            let item = self.clone_item(i, vm);
+            defer_drop!(item, vm);
+            match item.py_hash(vm)? {
+                Some(h) => h.hash(&mut hasher),
+                None => return Ok(None),
+            }
+        }
+        Ok(Some(hasher.finish()))
+    }
+
     /// Lexicographic comparison for tuples.
     ///
     /// Compares element-by-element left-to-right. The first non-equal pair
@@ -236,8 +263,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
     ///
     /// Returns `None` if any element pair is incomparable (e.g. `int` vs `str`).
     fn py_cmp(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<Ordering>, ResourceError> {
-        let a_len = self.get(vm).items.len();
-        let b_len = other.get(vm).items.len();
+        let a_len = self.get(&vm.heap).items.len();
+        let b_len = other.get(&vm.heap).items.len();
         let min_len = a_len.min(b_len);
         let token = vm.heap.incr_recursion_depth()?;
         defer_drop!(token, vm);
@@ -288,7 +315,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
     }
 
     fn py_bool(&self, vm: &mut VM<'h, impl ResourceTracker>) -> bool {
-        !self.get(vm).items.is_empty()
+        !self.get(&vm.heap).items.is_empty()
     }
 
     fn py_repr_fmt(
@@ -297,7 +324,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
         vm: &VM<'h, impl ResourceTracker>,
         heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
-        repr_sequence_fmt('(', ')', &self.get(vm).items, f, vm, heap_ids)
+        repr_sequence_fmt('(', ')', &self.get(&vm.heap).items, f, vm, heap_ids)
     }
 }
 
@@ -309,7 +336,7 @@ impl HeapItem for Tuple {
     /// Pushes all heap IDs contained in this tuple onto the stack.
     ///
     /// Called during garbage collection to decrement refcounts of nested values.
-    /// When `ref-count-panic` is enabled, also marks all Values as Dereferenced.
+    /// When `memory-model-checks` is enabled, also marks all Values as Dereferenced.
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
         // Skip iteration if no refs - GC optimization for tuples of primitives
         if !self.contains_refs {
@@ -318,7 +345,7 @@ impl HeapItem for Tuple {
         for obj in &mut self.items {
             if let Value::Ref(id) = obj {
                 stack.push(*id);
-                #[cfg(feature = "ref-count-panic")]
+                #[cfg(feature = "memory-model-checks")]
                 obj.dec_ref_forget();
             }
         }
@@ -337,17 +364,17 @@ fn tuple_index<'h>(
     let pos_args = args.into_pos_only("tuple.index", &mut vm.heap)?;
     defer_drop!(pos_args, vm);
 
-    let len = tuple.get(vm).as_slice().len();
+    let len = tuple.get(&vm.heap).as_slice().len();
     let (value, start, end) = match pos_args.as_slice() {
         [] => return Err(ExcType::type_error_at_least("tuple.index", 1, 0)),
         [value] => (value, 0, len),
         [value, start_arg] => {
-            let start = normalize_tuple_index(start_arg.as_int(vm)?, len);
+            let start = normalize_sequence_index(start_arg.as_int(vm)?, len);
             (value, start, len)
         }
         [value, start_arg, end_arg] => {
-            let start = normalize_tuple_index(start_arg.as_int(vm)?, len);
-            let end = normalize_tuple_index(end_arg.as_int(vm)?, len).max(start);
+            let start = normalize_sequence_index(start_arg.as_int(vm)?, len);
+            let end = normalize_sequence_index(end_arg.as_int(vm)?, len).max(start);
             (value, start, end)
         }
         other => return Err(ExcType::type_error_at_most("tuple.index", 3, other.len())),
@@ -376,7 +403,7 @@ fn tuple_count<'h>(
     let value = args.get_one_arg("tuple.count", &mut vm.heap)?;
     defer_drop!(value, vm);
 
-    let len = tuple.get(vm).as_slice().len();
+    let len = tuple.get(&vm.heap).as_slice().len();
     let mut count = 0usize;
     for i in 0..len {
         let item = tuple.clone_item(i, vm);
@@ -388,14 +415,4 @@ fn tuple_count<'h>(
 
     let count_i64 = i64::try_from(count).expect("count exceeds i64::MAX");
     Ok(Value::Int(count_i64))
-}
-
-/// Normalizes a Python-style tuple index to a valid index in range [0, len].
-fn normalize_tuple_index(index: i64, len: usize) -> usize {
-    if index < 0 {
-        let abs_index = usize::try_from(-index).unwrap_or(usize::MAX);
-        len.saturating_sub(abs_index)
-    } else {
-        usize::try_from(index).unwrap_or(len).min(len)
-    }
 }

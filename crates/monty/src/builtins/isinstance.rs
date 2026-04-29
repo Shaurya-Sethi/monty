@@ -20,7 +20,7 @@ pub fn builtin_isinstance(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues
     defer_drop!(obj, vm);
     defer_drop!(classinfo, vm);
     let obj_type = obj.py_type(vm);
-    let heap = &mut *vm.heap;
+    let heap = &mut vm.heap;
 
     match isinstance_check(obj_type, classinfo, heap) {
         Ok(result) => Ok(Value::Bool(result)),

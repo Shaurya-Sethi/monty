@@ -416,6 +416,42 @@ impl<T: ResourceTracker> ResolveFutures<T> {
         &self.pending_call_ids
     }
 
+    /// Forces a GC cycle against the exact root walk used by the live VM.
+    ///
+    /// This is test-only support for reproducing GC bugs while execution is
+    /// suspended in a `ResolveFutures` snapshot. The method round-trips through
+    /// `VM::restore()` and `VM::snapshot()` so the production scheduler/stack root
+    /// logic is exercised rather than duplicated in the test.
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn __force_gc_for_tests(self) -> Self {
+        let Self {
+            executor,
+            vm_state,
+            mut heap,
+            pending_call_ids,
+        } = self;
+
+        let vm_state = HeapReader::with(
+            &mut heap,
+            &mut (&executor, PrintWriter::Stdout),
+            |reader, (executor, print)| {
+                let mut vm = VM::restore(
+                    reader,
+                    vm_state,
+                    &executor.interns,
+                    &executor.module_code,
+                    print.reborrow(),
+                );
+                vm.__force_gc_for_tests();
+                vm.snapshot()
+            },
+        );
+
+        Self::new(executor, vm_state, heap, pending_call_ids)
+    }
+
     /// Resumes execution with results for some or all pending futures.
     ///
     /// **Incremental resolution**: You don't need to provide all results at once.

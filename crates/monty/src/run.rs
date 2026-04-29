@@ -71,6 +71,16 @@ impl MontyRun {
         self.executor.run_ref_counts(inputs)
     }
 
+    /// Executes the code and returns reference count data while using a custom tracker, used for testing only.
+    #[cfg(feature = "ref-count-return")]
+    pub fn run_ref_counts_with_tracker(
+        &self,
+        inputs: Vec<MontyObject>,
+        resource_tracker: impl ResourceTracker,
+    ) -> Result<RefCountOutput, MontyException> {
+        self.executor.run_ref_counts_with_tracker(inputs, resource_tracker)
+    }
+
     /// Executes the code to completion assuming not external functions or snapshotting.
     ///
     /// This is marginally faster than running with snapshotting enabled since we don't need
@@ -389,8 +399,15 @@ impl Executor {
     }
 
     /// Executes the code and returns both the result and reference count data, used for testing only.
+    #[cfg(feature = "ref-count-return")]
+    fn run_ref_counts(&self, inputs: Vec<MontyObject>) -> Result<RefCountOutput, MontyException> {
+        self.run_ref_counts_with_tracker(inputs, NoLimitTracker)
+    }
+
+    /// Executes the code and returns both the result and reference count data with a custom tracker,
+    /// used for testing only.
     ///
-    /// This is used for testing reference counting behavior. Returns:
+    /// This is used for testing reference counting behavior with a custom tracker. Returns:
     /// - The execution result (`Exit`)
     /// - Reference count data as a tuple of:
     ///   - A map from variable names to their reference counts (only for heap-allocated values)
@@ -402,10 +419,14 @@ impl Executor {
     ///
     /// Only available when the `ref-count-return` feature is enabled.
     #[cfg(feature = "ref-count-return")]
-    fn run_ref_counts(&self, inputs: Vec<MontyObject>) -> Result<RefCountOutput, MontyException> {
+    fn run_ref_counts_with_tracker(
+        &self,
+        inputs: Vec<MontyObject>,
+        resource_tracker: impl ResourceTracker,
+    ) -> Result<RefCountOutput, MontyException> {
         use std::collections::HashSet;
 
-        let mut heap = Heap::new(self.namespace_size, NoLimitTracker);
+        let mut heap = Heap::new(self.namespace_size, resource_tracker);
         let globals = self.empty_globals();
 
         HeapReader::with(
@@ -419,51 +440,51 @@ impl Executor {
                     Some(&executor.module_code),
                     print.reborrow(),
                 );
-                {
-                    self.populate_inputs(inputs, &mut vm)?;
-                    let frame_exit_result = vm.run_module();
+                self.populate_inputs(inputs, &mut vm)?;
+                let frame_exit_result = vm.run_module();
 
-                    // Take globals out of the VM so we can inspect them, but keep VM alive
-                    // for heap access and later conversion.
-                    let globals = vm.take_globals();
+                vm.__force_gc_for_tests();
 
-                    // Read refcounts BEFORE converting the return value, because
-                    // `frame_exit_to_object` drops the return value (decrementing its refcount).
-                    let mut counts = ahash::AHashMap::new();
-                    let mut unique_ids = HashSet::new();
+                // Take globals out of the VM so we can inspect them, but keep VM alive
+                // for heap access and later conversion.
+                let globals = vm.take_globals();
 
-                    for (name, &namespace_id) in &self.name_map {
-                        let idx = namespace_id.index();
-                        if idx < globals.len()
-                            && let Value::Ref(id) = &globals[idx]
-                        {
-                            counts.insert(name.clone(), vm.heap.get_refcount(*id));
-                            unique_ids.insert(*id);
-                        }
+                // Read refcounts BEFORE converting the return value, because
+                // `frame_exit_to_object` drops the return value (decrementing its refcount).
+                let mut counts = ahash::AHashMap::new();
+                let mut unique_ids = HashSet::new();
+
+                for (name, &namespace_id) in &self.name_map {
+                    let idx = namespace_id.index();
+                    if idx < globals.len()
+                        && let Value::Ref(id) = &globals[idx]
+                    {
+                        counts.insert(name.clone(), vm.heap.get_refcount(*id));
+                        unique_ids.insert(*id);
                     }
-                    let unique_refs = unique_ids.len();
-                    let heap_count = vm.heap.entry_count();
-
-                    // Convert return value while VM is still alive (needs access to interns).
-                    // Non-REPL: single source, so every frame resolves to `self.code`.
-                    let py_object = frame_exit_to_object(frame_exit_result, &mut vm)
-                        .map_err(|e| e.into_python_exception(&self.interns, |_| Some(self.code.as_str())))?;
-
-                    // Drop globals with proper ref counting
-                    for value in globals {
-                        value.drop_with_heap(&mut vm);
-                    }
-
-                    let allocations_since_gc = vm.heap.get_allocations_since_gc();
-
-                    Ok(RefCountOutput {
-                        py_object,
-                        counts,
-                        unique_refs,
-                        heap_count,
-                        allocations_since_gc,
-                    })
                 }
+                let unique_refs = unique_ids.len();
+                let heap_count = vm.heap.entry_count();
+
+                // Convert return value while VM is still alive (needs access to interns).
+                // Non-REPL: single source, so every frame resolves to `self.code`.
+                let py_object = frame_exit_to_object(frame_exit_result, &mut vm)
+                    .map_err(|e| e.into_python_exception(&self.interns, |_| Some(self.code.as_str())))?;
+
+                // Drop globals with proper ref counting
+                for value in globals {
+                    value.drop_with_heap(&mut vm);
+                }
+
+                let allocations_since_gc = vm.heap.get_allocations_since_gc();
+
+                Ok(RefCountOutput {
+                    py_object,
+                    counts,
+                    unique_refs,
+                    heap_count,
+                    allocations_since_gc,
+                })
             },
         )
     }

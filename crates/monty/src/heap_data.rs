@@ -1,10 +1,17 @@
-use std::{borrow::Cow, fmt::Write, mem, ops::Deref};
+use std::{
+    borrow::Cow,
+    collections::hash_map::DefaultHasher,
+    fmt::Write,
+    hash::{Hash, Hasher},
+    mem,
+    ops::Deref,
+};
 
 use ahash::AHashSet;
 use num_integer::Integer;
 
 use crate::{
-    ExcType, ResourceTracker,
+    ExcType, ResourceError, ResourceTracker,
     args::ArgValues,
     asyncio::{CallId, Coroutine, GatherFuture, GatherItem},
     bytecode::{CallResult, VM},
@@ -14,7 +21,7 @@ use crate::{
     types::{
         Bytes, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, List, LongInt, Module,
         MontyIter, NamedTuple, Path, PyTrait, Range, ReMatch, RePattern, Set, Slice, Str, Tuple, Type, date, datetime,
-        dict_view::DictView, timedelta, timezone,
+        timedelta, timezone,
     },
     value::{EitherStr, Value},
 };
@@ -584,50 +591,18 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             // NamedTuple/Tuple cross-type comparison
             (HeapReadOutput::NamedTuple(nt), HeapReadOutput::Tuple(t))
             | (HeapReadOutput::Tuple(t), HeapReadOutput::NamedTuple(nt)) => nt.eq_tuple(t, vm),
-            // DictKeysView comparisons — copy view to local, pass HeapRead directly
-            (HeapReadOutput::DictKeysView(a), HeapReadOutput::DictKeysView(b)) => {
-                let a_view = DictKeysView::new(a.get(vm).dict_id());
-                let b_view = DictKeysView::new(b.get(vm).dict_id());
-                a_view.eq_view(b_view, vm)
-            }
-            (HeapReadOutput::DictKeysView(a), HeapReadOutput::Set(b)) => {
-                let view = DictKeysView::new(a.get(vm).dict_id());
-                view.eq_set(b, vm)
-            }
-            (HeapReadOutput::Set(b), HeapReadOutput::DictKeysView(a)) => {
-                let view = DictKeysView::new(a.get(vm).dict_id());
-                view.eq_set(b, vm)
-            }
-            (HeapReadOutput::DictKeysView(a), HeapReadOutput::FrozenSet(b)) => {
-                let view = DictKeysView::new(a.get(vm).dict_id());
-                view.eq_frozenset(b, vm)
-            }
-            (HeapReadOutput::FrozenSet(b), HeapReadOutput::DictKeysView(a)) => {
-                let view = DictKeysView::new(a.get(vm).dict_id());
-                view.eq_frozenset(b, vm)
-            }
+            // DictKeysView comparisons
+            (HeapReadOutput::DictKeysView(a), HeapReadOutput::DictKeysView(b)) => a.py_eq(b, vm),
+            (HeapReadOutput::DictKeysView(a), HeapReadOutput::Set(b)) => a.eq_set(b, vm),
+            (HeapReadOutput::Set(b), HeapReadOutput::DictKeysView(a)) => a.eq_set(b, vm),
+            (HeapReadOutput::DictKeysView(a), HeapReadOutput::FrozenSet(b)) => a.eq_frozenset(b, vm),
+            (HeapReadOutput::FrozenSet(b), HeapReadOutput::DictKeysView(a)) => a.eq_frozenset(b, vm),
             // DictItemsView comparisons
-            (HeapReadOutput::DictItemsView(a), HeapReadOutput::DictItemsView(b)) => {
-                let a_view = DictItemsView::new(a.get(vm).dict_id());
-                let b_view = DictItemsView::new(b.get(vm).dict_id());
-                a_view.eq_view(b_view, vm)
-            }
-            (HeapReadOutput::DictItemsView(a), HeapReadOutput::Set(b)) => {
-                let view = DictItemsView::new(a.get(vm).dict_id());
-                view.eq_set(b, vm)
-            }
-            (HeapReadOutput::Set(b), HeapReadOutput::DictItemsView(a)) => {
-                let view = DictItemsView::new(a.get(vm).dict_id());
-                view.eq_set(b, vm)
-            }
-            (HeapReadOutput::DictItemsView(a), HeapReadOutput::FrozenSet(b)) => {
-                let view = DictItemsView::new(a.get(vm).dict_id());
-                view.eq_frozenset(b, vm)
-            }
-            (HeapReadOutput::FrozenSet(b), HeapReadOutput::DictItemsView(a)) => {
-                let view = DictItemsView::new(a.get(vm).dict_id());
-                view.eq_frozenset(b, vm)
-            }
+            (HeapReadOutput::DictItemsView(a), HeapReadOutput::DictItemsView(b)) => a.py_eq(b, vm),
+            (HeapReadOutput::DictItemsView(a), HeapReadOutput::Set(b)) => a.eq_set(b, vm),
+            (HeapReadOutput::Set(b), HeapReadOutput::DictItemsView(a)) => a.eq_set(b, vm),
+            (HeapReadOutput::DictItemsView(a), HeapReadOutput::FrozenSet(b)) => a.eq_frozenset(b, vm),
+            (HeapReadOutput::FrozenSet(b), HeapReadOutput::DictItemsView(a)) => a.eq_frozenset(b, vm),
             (HeapReadOutput::Dataclass(a), HeapReadOutput::Dataclass(b)) => {
                 if a.get(vm).name(vm.interns) != b.get(vm).name(vm.interns) {
                     return Ok(false);
@@ -658,6 +633,59 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             | (HeapReadOutput::DictValuesView(_), HeapReadOutput::DictValuesView(_)) => Ok(false),
             // Different types are never equal
             _ => Ok(false),
+        }
+    }
+
+    /// Dispatches `py_hash` to the variant's per-type `PyTrait` implementation.
+    ///
+    /// For types that lack a dedicated `HeapRead` trait impl (`Closure`,
+    /// `FunctionDefaults`, `Cell`, `LongInt`, `ExtFunction`), the hash is
+    /// computed inline here. Variants left in the catch-all `_ => Ok(None)`
+    /// arm are unhashable.
+    fn py_hash(&self, self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<u64>, ResourceError> {
+        match self {
+            Self::Str(s) => s.py_hash(self_id, vm),
+            Self::Bytes(b) => b.py_hash(self_id, vm),
+            Self::Tuple(t) => t.py_hash(self_id, vm),
+            Self::NamedTuple(nt) => nt.py_hash(self_id, vm),
+            Self::FrozenSet(fs) => fs.py_hash(self_id, vm),
+            Self::Dataclass(dc) => dc.py_hash(self_id, vm),
+            Self::Range(r) => r.py_hash(self_id, vm),
+            Self::Slice(s) => s.py_hash(self_id, vm),
+            Self::Path(p) => p.py_hash(self_id, vm),
+            Self::Date(d) => d.py_hash(self_id, vm),
+            Self::DateTime(d) => d.py_hash(self_id, vm),
+            Self::TimeDelta(d) => d.py_hash(self_id, vm),
+            Self::TimeZone(d) => d.py_hash(self_id, vm),
+            // Closure / FunctionDefaults: hash by function ID. Two equal
+            // closures share the same `func_id`, so this is sufficient.
+            Self::Closure(c) => {
+                let mut hasher = DefaultHasher::new();
+                c.get(vm).func_id.hash(&mut hasher);
+                Ok(Some(hasher.finish()))
+            }
+            Self::FunctionDefaults(fd) => {
+                let mut hasher = DefaultHasher::new();
+                fd.get(vm).func_id.hash(&mut hasher);
+                Ok(Some(hasher.finish()))
+            }
+            // Cell uses identity hashing (matches Python's default for cell objects).
+            Self::Cell(_) => {
+                let mut hasher = DefaultHasher::new();
+                self_id.hash(&mut hasher);
+                Ok(Some(hasher.finish()))
+            }
+            // LongInt's hash matches `Value::InternLongInt`'s, since they are
+            // both Python `int` values and must hash equally when equal.
+            Self::LongInt(li) => Ok(Some(li.get(vm).hash())),
+            Self::ExtFunction(name) => {
+                let mut hasher = DefaultHasher::new();
+                name.get(vm).hash(&mut hasher);
+                Ok(Some(hasher.finish()))
+            }
+            // Unhashable: List, Dict, Set, the dict views, Iter, Module,
+            // Exception, Coroutine, GatherFuture, RePattern, ReMatch.
+            _ => Ok(None),
         }
     }
 

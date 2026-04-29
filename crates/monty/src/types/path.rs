@@ -4,7 +4,12 @@
 //! (require `OsAccess` implementation). Pure methods are handled directly by the VM,
 //! while filesystem methods yield external function calls for the host to resolve.
 
-use std::{fmt::Write, mem};
+use std::{
+    collections::hash_map::DefaultHasher,
+    fmt::Write,
+    hash::{Hash, Hasher},
+    mem,
+};
 
 use ahash::AHashSet;
 use smallvec::SmallVec;
@@ -484,7 +489,13 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
     }
 
     fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<bool, ResourceError> {
-        Ok(self.get(vm).path == other.get(vm).path)
+        Ok(self.get(&vm.heap).path == other.get(&vm.heap).path)
+    }
+
+    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<u64>, ResourceError> {
+        let mut hasher = DefaultHasher::new();
+        self.get(&vm.heap).as_str().hash(&mut hasher);
+        Ok(Some(hasher.finish()))
     }
 
     fn py_bool(&self, _vm: &mut VM<'h, impl ResourceTracker>) -> bool {
@@ -499,7 +510,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
         _heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
         // Format like: PosixPath('/usr/bin')
-        Ok(write!(f, "PosixPath('{}')", self.get(vm).path)?)
+        Ok(write!(f, "PosixPath('{}')", self.get(&vm.heap).path)?)
     }
 
     /// Handles attribute calls on Path objects, including both pure methods (no I/O)
@@ -532,12 +543,12 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
         let value = match method {
             StaticStrings::IsAbsolute => {
                 args.check_zero_args("is_absolute", &mut vm.heap)?;
-                Ok(Value::Bool(self.get(vm).is_absolute()))
+                Ok(Value::Bool(self.get(&vm.heap).is_absolute()))
             }
             StaticStrings::Joinpath => {
                 let pos_args = args.into_pos_only("joinpath", &mut vm.heap)?;
                 defer_drop!(pos_args, vm);
-                let path = fold_joinpath(self.get(vm).clone(), pos_args.as_slice(), vm)?;
+                let path = fold_joinpath(self.get(&vm.heap).clone(), pos_args.as_slice(), vm)?;
                 Ok(Value::Ref(vm.heap.allocate(HeapData::Path(path))?))
             }
             StaticStrings::WithName => {
@@ -545,7 +556,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
                 defer_drop!(name_val, vm);
                 let name = extract_path_string(name_val, vm)?.to_owned();
                 let result = self
-                    .get(vm)
+                    .get(&vm.heap)
                     .with_name(&name)
                     .map_err(|e| SimpleException::new_msg(ExcType::ValueError, &e))?;
                 Ok(Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(result)))?))
@@ -555,7 +566,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
                 defer_drop!(stem_val, vm);
                 let stem = extract_path_string(stem_val, vm)?.to_owned();
                 let result = self
-                    .get(vm)
+                    .get(&vm.heap)
                     .with_stem(&stem)
                     .map_err(|e| SimpleException::new_msg(ExcType::ValueError, &e))?;
                 Ok(Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(result)))?))
@@ -565,7 +576,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
                 defer_drop!(suffix_val, vm);
                 let suffix = extract_path_string(suffix_val, vm)?.to_owned();
                 let result = self
-                    .get(vm)
+                    .get(&vm.heap)
                     .with_suffix(&suffix)
                     .map_err(|e| SimpleException::new_msg(ExcType::ValueError, &e))?;
                 Ok(Value::Ref(vm.heap.allocate(HeapData::Path(Path::new(result)))?))
@@ -573,7 +584,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
             StaticStrings::AsPosix | StaticStrings::Fspath => {
                 args.check_zero_args(method.into(), &mut vm.heap)?;
                 Ok(Value::Ref(vm.heap.allocate(HeapData::Str(Str::new(
-                    self.get(vm).as_posix().to_owned(),
+                    self.get(&vm.heap).as_posix().to_owned(),
                 )))?))
             }
             _ => {
@@ -587,7 +598,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
         // Fast path: interned strings can be matched by ID without string comparison
         if let Some(ss) = attr.static_string() {
-            if let Some(v) = self.get(vm).getattr_by_static(ss, &vm.heap)? {
+            if let Some(v) = self.get(&vm.heap).getattr_by_static(ss, &vm.heap)? {
                 return Ok(Some(CallResult::Value(v)));
             }
             return Err(ExcType::attribute_error(Type::Path, attr.as_str(vm.interns)));
@@ -604,7 +615,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Path> {
             _ => return Err(ExcType::attribute_error(Type::Path, attr_str)),
         };
         let v = self
-            .get(vm)
+            .get(&vm.heap)
             .getattr_by_static(ss, &vm.heap)?
             .expect("matched attribute must produce a value");
         Ok(Some(CallResult::Value(v)))

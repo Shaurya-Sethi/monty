@@ -6,6 +6,7 @@
 use std::{
     borrow::Cow,
     cmp::Ordering,
+    collections::hash_map::DefaultHasher,
     fmt::Write,
     hash::{Hash, Hasher},
     mem,
@@ -47,6 +48,18 @@ pub(crate) struct DateTime {
     /// allocating a new timezone each time.
     #[serde(default)]
     tzinfo_ref: Option<HeapId>,
+}
+
+impl DateTime {
+    /// Returns the retained `tzinfo` heap reference, if this datetime is timezone-aware.
+    ///
+    /// Used by GC traversal (`collect_child_ids`) and ref-count cascade
+    /// (`py_dec_ref_ids_for_data`) so that the timezone object stays alive as long
+    /// as the datetime references it. Without this, `gc.collect` cannot reach the
+    /// tzinfo and may sweep it while the datetime still points at the freed slot.
+    pub(crate) fn tzinfo_ref(&self) -> Option<HeapId> {
+        self.tzinfo_ref
+    }
 }
 
 impl Hash for DateTime {
@@ -980,8 +993,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
     }
 
     fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<bool, ResourceError> {
-        let a = self.get(vm);
-        let b = other.get(vm);
+        let a = self.get(&vm.heap);
+        let b = other.get(&vm.heap);
         if is_aware(a) != is_aware(b) {
             return Ok(false);
         }
@@ -991,9 +1004,15 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
         Ok(local_micros(a) == local_micros(b))
     }
 
+    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<u64>, ResourceError> {
+        let mut hasher = DefaultHasher::new();
+        self.get(&vm.heap).hash(&mut hasher);
+        Ok(Some(hasher.finish()))
+    }
+
     fn py_cmp(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<Ordering>, ResourceError> {
-        let a = self.get(vm);
-        let b = other.get(vm);
+        let a = self.get(&vm.heap);
+        let b = other.get(&vm.heap);
         if is_aware(a) != is_aware(b) {
             return Ok(None);
         }
@@ -1013,7 +1032,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
         vm: &VM<'h, impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
-        let dt = self.get(vm);
+        let dt = self.get(&vm.heap);
         let Some((year, month, day, hour, minute, second, microsecond)) = to_components(dt) else {
             f.write_str("datetime.datetime(<out of range>)")?;
             return Ok(());
@@ -1043,7 +1062,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
     }
 
     fn py_str(&self, vm: &VM<'h, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
-        let dt = self.get(vm);
+        let dt = self.get(&vm.heap);
         let Some((year, month, day, hour, minute, second, microsecond)) = to_components(dt) else {
             return Ok(Cow::Borrowed("<out of range>"));
         };
@@ -1064,7 +1083,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
         attr: &EitherStr,
         args: ArgValues,
     ) -> RunResult<CallResult> {
-        let dt = self.get(vm).clone();
+        let dt = self.get(&vm.heap).clone();
         match attr.string_id() {
             Some(id) if id == StaticStrings::Isoformat => {
                 args.check_zero_args("datetime.isoformat", &mut vm.heap)?;
@@ -1117,7 +1136,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
         // Clone to release the HeapRead borrow before accessing attributes
         // that may need to allocate (e.g. tzinfo).
-        let dt = self.get(vm).clone();
+        let dt = self.get(&vm.heap).clone();
         match attr.string_id() {
             Some(id) if id == StaticStrings::Year => {
                 Ok(Some(CallResult::Value(Value::Int(i64::from(dt.naive.date().year())))))

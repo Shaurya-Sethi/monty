@@ -9,6 +9,8 @@
 //! `heap_reader_compile_fail_tests` cfg (plus a per-test cfg) is set.
 
 use super::*;
+#[cfg(heap_reader_compile_fail_test_smuggle_heap_read_via_vm)]
+use crate::bytecode::VM;
 
 /// Must not compile: allocating on the heap while holding a reference derived from `HeapRead::get`.
 ///
@@ -215,7 +217,6 @@ fn substitute_vm(
 /// Expected: E0521 (borrowed data escapes outside of closure)
 #[cfg(heap_reader_compile_fail_test_smuggle_heap_read_via_vm)]
 fn smuggle_heap_read_via_vm(list_id: HeapId, heap: &mut Heap<impl ResourceTracker>, interns: &crate::intern::Interns) {
-    use crate::bytecode::VM;
     let mut smuggled: Option<HeapRead<'_, List>> = None;
     HeapReader::with(
         heap,

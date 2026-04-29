@@ -7,6 +7,7 @@ use std::{
 
 use ahash::AHashSet;
 use hashbrown::HashTable;
+use serde::ser::SerializeStruct;
 use smallvec::{SmallVec, smallvec};
 
 use super::{DictItemsView, DictKeysView, DictValuesView, MontyIter, PyTrait, allocate_tuple};
@@ -806,12 +807,12 @@ impl HeapItem for Dict {
         for entry in &mut self.entries {
             if let Value::Ref(id) = &entry.key {
                 stack.push(*id);
-                #[cfg(feature = "ref-count-panic")]
+                #[cfg(feature = "memory-model-checks")]
                 entry.key.dec_ref_forget();
             }
             if let Value::Ref(id) = &entry.value {
                 stack.push(*id);
-                #[cfg(feature = "ref-count-panic")]
+                #[cfg(feature = "memory-model-checks")]
                 entry.value.dec_ref_forget();
             }
         }
@@ -1043,7 +1044,6 @@ fn dict_popitem<'h>(dict: &mut HeapRead<'h, Dict>, vm: &mut VM<'h, impl Resource
 // Serializes entries and contains_refs; rebuilds the indices hash table on deserialize.
 impl serde::Serialize for Dict {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::SerializeStruct;
         let mut state = serializer.serialize_struct("Dict", 2)?;
         state.serialize_field("entries", &self.entries)?;
         state.serialize_field("contains_refs", &self.contains_refs)?;

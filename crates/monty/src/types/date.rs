@@ -3,7 +3,14 @@
 //! Monty stores dates with `chrono::NaiveDate` and keeps CPython-compatible
 //! constructor validation and arithmetic behavior.
 
-use std::{borrow::Cow, cmp::Ordering, fmt::Write, mem};
+use std::{
+    borrow::Cow,
+    cmp::Ordering,
+    collections::hash_map::DefaultHasher,
+    fmt::Write,
+    hash::{Hash, Hasher},
+    mem,
+};
 
 use ahash::AHashSet;
 use chrono::{Datelike, NaiveDate};
@@ -250,11 +257,17 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
     }
 
     fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<bool, ResourceError> {
-        Ok(*self.get(vm) == *other.get(vm))
+        Ok(*self.get(&vm.heap) == *other.get(&vm.heap))
+    }
+
+    fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<u64>, ResourceError> {
+        let mut hasher = DefaultHasher::new();
+        self.get(&vm.heap).hash(&mut hasher);
+        Ok(Some(hasher.finish()))
     }
 
     fn py_cmp(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> Result<Option<Ordering>, ResourceError> {
-        Ok(self.get(vm).partial_cmp(other.get(vm)))
+        Ok(self.get(&vm.heap).partial_cmp(other.get(&vm.heap)))
     }
 
     fn py_bool(&self, _vm: &mut VM<'h, impl ResourceTracker>) -> bool {
@@ -267,13 +280,13 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
         vm: &VM<'h, impl ResourceTracker>,
         _heap_ids: &mut AHashSet<HeapId>,
     ) -> RunResult<()> {
-        let (year, month, day) = to_ymd(*self.get(vm));
+        let (year, month, day) = to_ymd(*self.get(&vm.heap));
         write!(f, "datetime.date({year}, {month}, {day})")?;
         Ok(())
     }
 
     fn py_str(&self, vm: &VM<'h, impl ResourceTracker>) -> RunResult<Cow<'static, str>> {
-        let (year, month, day) = to_ymd(*self.get(vm));
+        let (year, month, day) = to_ymd(*self.get(&vm.heap));
         Ok(Cow::Owned(format!("{year:04}-{month:02}-{day:02}")))
     }
 
@@ -284,7 +297,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
         attr: &EitherStr,
         args: ArgValues,
     ) -> RunResult<CallResult> {
-        let date = *self.get(vm);
+        let date = *self.get(&vm.heap);
         match attr.string_id() {
             Some(id) if id == StaticStrings::Isoformat => {
                 args.check_zero_args("date.isoformat", &mut vm.heap)?;
@@ -326,7 +339,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
-        let (year, month, day) = to_ymd(*self.get(vm));
+        let (year, month, day) = to_ymd(*self.get(&vm.heap));
         match attr.string_id() {
             Some(id) if id == StaticStrings::Year => Ok(Some(CallResult::Value(Value::Int(i64::from(year))))),
             Some(id) if id == StaticStrings::Month => Ok(Some(CallResult::Value(Value::Int(i64::from(month))))),

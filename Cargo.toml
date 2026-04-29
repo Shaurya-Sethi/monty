@@ -15,8 +15,8 @@ default-members = ["crates/monty-cli"]
 
 [workspace.package]
 edition = "2024"
-version = "0.0.16"
-rust-version = "1.90"
+version = "0.0.17"
+rust-version = "1.95"
 license = "MIT"
 authors = ["Samuel Colvin <samuel@pydantic.dev>"]
 description = "A sandboxed, snapshotable Python interpreter written in Rust."
@@ -65,6 +65,7 @@ serde_json = { version = "1.0", features = ["arbitrary_precision"] }
 postcard = { version = "1.1", features = ["alloc"] }
 sha2 = "0.10"
 pretty_assertions = "1.4"
+insta = "1.47"
 
 [workspace.lints.rust]
 # codspeed cfg is set by codspeed-criterion-compat when running in CodSpeed environment
