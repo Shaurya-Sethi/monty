@@ -12,6 +12,7 @@ use ahash::AHashSet;
 use num_bigint::BigInt;
 use num_integer::Integer;
 use num_traits::{ToPrimitive, Zero};
+use smallvec::SmallVec;
 
 use crate::{
     asyncio::CallId,
@@ -21,9 +22,12 @@ use crate::{
     heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapReadOutput},
     intern::{BytesId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
     modules::ModuleFunctions,
-    resource::{ResourceError, ResourceTracker, check_div_size, check_lshift_size, check_pow_size, check_repeat_size},
+    resource::{
+        ResourceError, ResourceTracker, check_div_size, check_lshift_size, check_mult_size, check_pow_size,
+        check_repeat_size,
+    },
     types::{
-        Bytes, LongInt, Property, PyTrait, Str, Type,
+        Bytes, List, LongInt, Property, PyTrait, Str, Type, allocate_tuple,
         bytes::{bytes_repr_fmt, get_byte_at_index},
         long_int::check_bits_str_digits_limit,
         path,
@@ -638,12 +642,131 @@ impl PyTrait<'_> for Value {
                     Ok(Some(li.into_value(&vm.heap)?))
                 }
             }
-            // Int * Ref (LongInt or sequence)
-            (Self::Int(a), Self::Ref(id)) => vm.heap.mult_ref_by_i64(*id, *a),
-            // Ref * Int (LongInt or sequence)
-            (Self::Ref(id), Self::Int(b)) => vm.heap.mult_ref_by_i64(*id, *b),
-            // Ref * Ref (LongInt * LongInt, sequence * LongInt, etc.)
-            (Self::Ref(id1), Self::Ref(id2)) => vm.heap.mult_heap_values(*id1, *id2),
+            // Int * heap-allocated value (commutative for the supported types).
+            // Covers LongInt and TimeDelta numeric multiplication, plus repetition
+            // of heap-allocated Str/Bytes/List/Tuple sequences by an integer count.
+            (Self::Int(n), Self::Ref(id)) | (Self::Ref(id), Self::Int(n)) => match vm.heap.get(*id) {
+                HeapData::LongInt(li) => {
+                    check_mult_size(li.bits(), i64_bits(*n), vm.heap.tracker())?;
+                    let result = LongInt::new(li.inner().clone()) * LongInt::from(*n);
+                    Ok(Some(result.into_value(&vm.heap)?))
+                }
+                HeapData::TimeDelta(td) => {
+                    let total = timedelta::total_microseconds(td)
+                        .checked_mul(i128::from(*n))
+                        .ok_or_else(|| {
+                            SimpleException::new_msg(ExcType::OverflowError, "timedelta multiplication overflow")
+                        })?;
+                    let delta = timedelta::from_total_microseconds(total)?;
+                    Ok(Some(Self::Ref(vm.heap.allocate(HeapData::TimeDelta(delta))?)))
+                }
+                HeapData::Str(s) => {
+                    let count = i64_to_repeat_count(*n)?;
+                    check_repeat_size(s.len(), count, vm.heap.tracker())?;
+                    Ok(Some(Self::Ref(
+                        vm.heap.allocate(HeapData::Str(s.as_str().repeat(count).into()))?,
+                    )))
+                }
+                HeapData::Bytes(b) => {
+                    let count = i64_to_repeat_count(*n)?;
+                    check_repeat_size(b.len(), count, vm.heap.tracker())?;
+                    Ok(Some(Self::Ref(
+                        vm.heap.allocate(HeapData::Bytes(b.as_slice().repeat(count).into()))?,
+                    )))
+                }
+                HeapData::List(list) => {
+                    let count = i64_to_repeat_count(*n)?;
+                    check_repeat_size(
+                        list.len().saturating_mul(mem::size_of::<Self>()),
+                        count,
+                        vm.heap.tracker(),
+                    )?;
+                    let mut result = Vec::with_capacity(list.as_slice().len() * count);
+                    for _ in 0..count {
+                        result.extend(list.as_slice().iter().map(|v| v.clone_with_heap(&vm.heap)));
+                        vm.heap.check_time()?;
+                    }
+                    Ok(Some(Self::Ref(vm.heap.allocate(HeapData::List(List::new(result)))?)))
+                }
+                HeapData::Tuple(tuple) => {
+                    let count = i64_to_repeat_count(*n)?;
+                    if count == 0 {
+                        Ok(Some(vm.heap.get_empty_tuple()))
+                    } else {
+                        check_repeat_size(
+                            tuple.as_slice().len().saturating_mul(mem::size_of::<Self>()),
+                            count,
+                            vm.heap.tracker(),
+                        )?;
+                        let mut result = SmallVec::with_capacity(tuple.as_slice().len() * count);
+                        for _ in 0..count {
+                            result.extend(tuple.as_slice().iter().map(|v| v.clone_with_heap(&vm.heap)));
+                            vm.heap.check_time()?;
+                        }
+                        Ok(Some(allocate_tuple(result, &vm.heap)?))
+                    }
+                }
+                _ => Ok(None),
+            },
+            // Ref * Ref: LongInt * LongInt is numeric multiplication; LongInt * sequence
+            // (or vice versa) is repetition of a heap-allocated Str/Bytes/List/Tuple.
+            (Self::Ref(id1), Self::Ref(id2)) => {
+                let (seq_id, count) = match (vm.heap.get(*id1), vm.heap.get(*id2)) {
+                    (HeapData::LongInt(a), HeapData::LongInt(b)) => {
+                        check_mult_size(a.bits(), b.bits(), vm.heap.tracker())?;
+                        let result = LongInt::new(a.inner() * b.inner());
+                        return Ok(Some(result.into_value(&vm.heap)?));
+                    }
+                    (HeapData::LongInt(li), _) => (*id2, longint_to_repeat_count(li)?),
+                    (_, HeapData::LongInt(li)) => (*id1, longint_to_repeat_count(li)?),
+                    _ => return Ok(None),
+                };
+                match vm.heap.get(seq_id) {
+                    HeapData::Str(s) => {
+                        check_repeat_size(s.len(), count, vm.heap.tracker())?;
+                        Ok(Some(Self::Ref(
+                            vm.heap.allocate(HeapData::Str(s.as_str().repeat(count).into()))?,
+                        )))
+                    }
+                    HeapData::Bytes(b) => {
+                        check_repeat_size(b.len(), count, vm.heap.tracker())?;
+                        Ok(Some(Self::Ref(
+                            vm.heap.allocate(HeapData::Bytes(b.as_slice().repeat(count).into()))?,
+                        )))
+                    }
+                    HeapData::List(list) => {
+                        check_repeat_size(
+                            list.len().saturating_mul(mem::size_of::<Self>()),
+                            count,
+                            vm.heap.tracker(),
+                        )?;
+                        let mut result = Vec::with_capacity(list.as_slice().len() * count);
+                        for _ in 0..count {
+                            result.extend(list.as_slice().iter().map(|v| v.clone_with_heap(&vm.heap)));
+                            vm.heap.check_time()?;
+                        }
+                        Ok(Some(Self::Ref(vm.heap.allocate(HeapData::List(List::new(result)))?)))
+                    }
+                    HeapData::Tuple(tuple) => {
+                        if count == 0 {
+                            Ok(Some(vm.heap.get_empty_tuple()))
+                        } else {
+                            check_repeat_size(
+                                tuple.as_slice().len().saturating_mul(mem::size_of::<Self>()),
+                                count,
+                                vm.heap.tracker(),
+                            )?;
+                            let mut result = SmallVec::with_capacity(tuple.as_slice().len() * count);
+                            for _ in 0..count {
+                                result.extend(tuple.as_slice().iter().map(|v| v.clone_with_heap(&vm.heap)));
+                                vm.heap.check_time()?;
+                            }
+                            Ok(Some(allocate_tuple(result, &vm.heap)?))
+                        }
+                    }
+                    _ => Ok(None),
+                }
+            }
             (Self::Float(a), Self::Float(b)) => Ok(Some(Self::Float(a * b))),
             (Self::Int(a), Self::Float(b)) => Ok(Some(Self::Float(*a as f64 * b))),
             (Self::Float(a), Self::Int(b)) => Ok(Some(Self::Float(a * *b as f64))),
@@ -1387,7 +1510,7 @@ impl Value {
     /// For heap-allocated values (Ref variant), this computes the hash lazily
     /// on first use and caches it for subsequent calls.
     pub fn py_hash(&self, vm: &mut VM<'_, impl ResourceTracker>) -> Result<Option<u64>, ResourceError> {
-        // strings bytes bigints and heap allocated values have their own hashing logic
+        let mut hasher = DefaultHasher::new();
         match self {
             // Hash just the actual string or bytes content for consistency with heap Str/Bytes
             // hence we don't include the discriminant
@@ -1401,6 +1524,21 @@ impl Value {
                 vm.interns.get_bytes(*bytes_id).hash(&mut hasher);
                 return Ok(Some(hasher.finish()));
             }
+            // Bool and int hash directly as their value, and are equivalent
+            Self::Bool(b) => return Ok(Some((*b).into())),
+            Self::Int(i) => return Ok(Some(i.cast_unsigned())),
+            Self::Float(f) => {
+                return {
+                    if f.fract() == 0.0 && *f >= (i64::MIN as f64) && *f <= (i64::MAX as f64) {
+                        // Hash floats that are mathematically integers the same as Ints (e.g., 1.0 hashes the same as 1)
+                        #[expect(clippy::cast_possible_truncation)]
+                        Ok(Some((*f as i64).cast_unsigned()))
+                    } else {
+                        // Hash the bit representation of the float
+                        Ok(Some(f.to_bits()))
+                    }
+                };
+            }
             // Hash BigInt consistently with LongInt (using sign and bytes for large values)
             Self::InternLongInt(long_int_id) => {
                 let bi = vm.interns.get_long_int(*long_int_id);
@@ -1412,19 +1550,8 @@ impl Value {
             }
             // For heap-allocated values (includes Range and Exception), compute hash lazily and cache it
             Self::Ref(id) => return Heap::get_or_compute_hash(vm, *id),
-            _ => {}
-        }
-
-        let mut hasher = DefaultHasher::new();
-        // hash based on discriminant to avoid collisions with different types
-        discriminant(self).hash(&mut hasher);
-        match self {
-            // Immediate values can be hashed directly
-            Self::Undefined | Self::Ellipsis | Self::None => {}
-            Self::Bool(b) => b.hash(&mut hasher),
-            Self::Int(i) => i.hash(&mut hasher),
-            // Hash the bit representation of float for consistency
-            Self::Float(f) => f.to_bits().hash(&mut hasher),
+            // Singleton values can be hashed directly
+            Self::Undefined | Self::Ellipsis | Self::None => discriminant(self).hash(&mut hasher),
             Self::Builtin(b) => b.hash(&mut hasher),
             Self::ModuleFunction(mf) => mf.hash(&mut hasher),
             // Hash functions based on function ID
@@ -1436,12 +1563,10 @@ impl Value {
             Self::Property(p) => p.hash(&mut hasher),
             // ExternalFutures are hashable based on their call ID
             Self::ExternalFuture(call_id) => call_id.raw().hash(&mut hasher),
-            Self::InternString(_) | Self::InternBytes(_) | Self::InternLongInt(_) | Self::Ref(_) => {
-                unreachable!("covered above")
-            }
             #[cfg(feature = "memory-model-checks")]
             Self::Dereferenced => panic!("Cannot access Dereferenced object"),
         }
+
         Ok(Some(hasher.finish()))
     }
 
