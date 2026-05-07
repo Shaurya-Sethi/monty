@@ -124,19 +124,13 @@ impl<T: ResourceTracker> VM<'_, T> {
 
         // For uncatchable exceptions (ResourceError like RecursionError),
         // we still need to unwind the stack to collect all frames for the traceback
-        if matches!(error, RunError::UncatchableExc(_) | RunError::Internal(_)) {
-            return Some(self.unwind_for_traceback(error));
-        }
-
-        // Only catchable exceptions can be handled
-        let exc_info = match &error {
-            RunError::Exc(exc) => exc.clone(),
-            RunError::UncatchableExc(_) | RunError::Internal(_) => unreachable!(),
+        let exc_info = match &mut error {
+            RunError::Exc(exc) => exc,
+            RunError::UncatchableExc(_) | RunError::Internal(_) => return Some(self.unwind_for_traceback(error)),
         };
 
         // Create exception value to push on stack
-        let exc_value = self.create_exception_value(&exc_info);
-        let exc_value = match exc_value {
+        let exc_value = match self.create_exception_value(exc_info) {
             Ok(v) => v,
             Err(e) => return Some(e),
         };
@@ -156,10 +150,22 @@ impl<T: ResourceTracker> VM<'_, T> {
                 // Found a handler! Unwind stack and jump to it.
                 let handler_offset = usize::try_from(entry.handler()).expect("handler offset exceeds usize");
                 let target_stack_depth = frame.stack_base + frame.locals_count as usize + entry.stack_depth() as usize;
+                let target_exc_stack_depth = frame.exception_stack_base + entry.exception_stack_count() as usize;
 
                 // Unwind stack to target depth (drop excess values)
                 while this.stack.len() > target_stack_depth {
                     let value = this.stack.pop().unwrap();
+                    value.drop_with_heap(this);
+                }
+
+                // Drop any `exception_stack` entries left behind by handlers
+                // the propagating exception is bypassing — without this, a
+                // handler whose body terminated via `raise`/`return`/`break`/
+                // `continue` (so its trailer's `ClearException` is dead code)
+                // would leak its exception onto `exception_stack`, where a
+                // later bare `raise` could resurrect it.
+                while this.exception_stack.len() > target_exc_stack_depth {
+                    let value = this.exception_stack.pop().unwrap();
                     value.drop_with_heap(this);
                 }
 
@@ -171,7 +177,7 @@ impl<T: ResourceTracker> VM<'_, T> {
                 let (exc_value, this) = exc_guard.into_parts();
 
                 // Push exception onto the exception_stack for bare raise
-                // This allows nested except handlers to restore outer exception context
+                // and for `__context__` lookup on subsequent exceptions.
                 this.exception_stack.push(exc_value);
 
                 // Jump to handler
@@ -219,11 +225,7 @@ impl<T: ResourceTracker> VM<'_, T> {
             // Add caller frame info to traceback (if we have call position)
             if let Some(pos) = call_position {
                 let frame_name = this.current_frame_name();
-                match &mut error {
-                    RunError::Exc(exc) => exc.add_caller_frame(pos, frame_name),
-                    RunError::UncatchableExc(exc) => exc.add_caller_frame(pos, frame_name),
-                    RunError::Internal(_) => {}
-                }
+                exc_info.add_caller_frame(pos, frame_name);
             }
         }
     }
@@ -257,8 +259,23 @@ impl<T: ResourceTracker> VM<'_, T> {
     /// Creates an exception Value from exception info.
     ///
     /// Allocates an Exception on the heap and returns a Value::Ref to it.
+    /// Also sets the new exception's implicit `__context__` chain to the
+    /// previously-being-handled exception (top of `exception_stack`),
+    /// matching CPython's behavior — when an exception is raised inside
+    /// an `except` (or `finally`) handler, its `__context__` points at
+    /// the exception the handler was processing.
     fn create_exception_value(&mut self, exc: &ExceptionRaise) -> Result<Value, RunError> {
-        let exception = exc.exc.clone();
+        let mut exception = exc.exc.clone();
+        let context = self.exception_stack.last().and_then(|v| match v {
+            Value::Ref(heap_id) => Some(*heap_id),
+            _ => None,
+        });
+        if let Some(ctx_id) = context {
+            // The new heap entry takes ownership of one ref on the context
+            // (released by `py_dec_ref_ids_for_data` when the entry is freed).
+            self.heap.inc_ref(ctx_id);
+            exception.set_context(Some(ctx_id));
+        }
         let heap_id = self.heap.allocate(HeapData::Exception(exception))?;
         Ok(Value::Ref(heap_id))
     }

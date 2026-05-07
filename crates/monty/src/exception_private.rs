@@ -13,7 +13,7 @@ use crate::{
     defer_drop,
     exception_public::{MontyException, SourceMap, StackFrame},
     fstring::FormatError,
-    heap::{HeapData, HeapRead},
+    heap::{HeapData, HeapId, HeapRead},
     intern::{Interns, StaticStrings, StringId},
     parse::CodeRange,
     resource::ResourceTracker,
@@ -1376,10 +1376,26 @@ impl ExcType {
 ///
 /// This is used for performance reasons for common exception patterns.
 /// Exception messages use `String` for owned storage.
+///
+/// `context` is the implicit exception chain set by Python — when a new
+/// exception is raised inside an `except` (or `finally`) handler, the
+/// VM sets `context` to the HeapId of the previously-being-handled
+/// exception. The chain is exposed as the `__context__` attribute and
+/// shows up in tracebacks as "During handling of the above exception,
+/// another exception occurred."
+///
+/// **Refcount note:** `context` is a heap reference but `SimpleException`
+/// derives `Clone`, which copies the `HeapId` bits without `inc_ref`.
+/// This is intentional — the convention is that a `HeapData::Exception`
+/// owns one refcount on its `context` (balanced by the heap's
+/// `dec_ref` traversal through `py_dec_ref_ids_for_data`). Code that
+/// allocates a new `HeapData::Exception` carrying a context must
+/// `inc_ref` the context HeapId itself.
 #[derive(Debug, Clone, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
 pub(crate) struct SimpleException {
     exc_type: ExcType,
     arg: Option<String>,
+    context: Option<HeapId>,
 }
 
 impl fmt::Display for SimpleException {
@@ -1392,6 +1408,7 @@ impl From<MontyException> for SimpleException {
         Self {
             exc_type: exc.exc_type(),
             arg: exc.into_message(),
+            context: None,
         }
     }
 }
@@ -1400,7 +1417,11 @@ impl SimpleException {
     /// Creates a new exception with the given type and optional argument message.
     #[must_use]
     pub fn new(exc_type: ExcType, arg: Option<String>) -> Self {
-        Self { exc_type, arg }
+        Self {
+            exc_type,
+            arg,
+            context: None,
+        }
     }
 
     /// Creates a new exception with the given type and argument message.
@@ -1409,13 +1430,18 @@ impl SimpleException {
         Self {
             exc_type,
             arg: Some(arg.to_string()),
+            context: None,
         }
     }
 
     /// Creates a new exception with the given type and no argument message.
     #[must_use]
     pub fn new_none(exc_type: ExcType) -> Self {
-        Self { exc_type, arg: None }
+        Self {
+            exc_type,
+            arg: None,
+            context: None,
+        }
     }
 
     #[must_use]
@@ -1426,6 +1452,19 @@ impl SimpleException {
     #[must_use]
     pub fn arg(&self) -> Option<&String> {
         self.arg.as_ref()
+    }
+
+    /// Returns the implicit `__context__` chain HeapId, if any.
+    #[must_use]
+    pub fn context(&self) -> Option<HeapId> {
+        self.context
+    }
+
+    /// Sets the implicit `__context__` chain HeapId. Caller is responsible
+    /// for `inc_ref`-ing the context if this `SimpleException` is going to
+    /// be allocated into a `HeapData::Exception` entry that takes ownership.
+    pub fn set_context(&mut self, context: Option<HeapId>) {
+        self.context = context;
     }
 
     /// str() for an exception
@@ -1479,13 +1518,16 @@ impl SimpleException {
 impl<'h> HeapRead<'h, SimpleException> {
     /// Gets an attribute from this exception.
     ///
-    /// Handles the `.args` attribute by allocating a tuple containing the message.
-    /// Returns `Err(AttributeError)` for all other attributes.
+    /// Handles `.args` (a tuple containing the message) and `.__context__`
+    /// (the implicitly-chained previously-being-handled exception, or
+    /// `None`). Returns `Ok(None)` for unrecognized attributes so the
+    /// caller can fall through to the generic AttributeError path.
     pub fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
         // Fast path: interned strings can be matched by ID
-        let is_args = attr
-            .static_string()
-            .map_or_else(|| attr.as_str(vm.interns) == "args", |ss| ss == StaticStrings::Args);
+        let attr_static = attr.static_string();
+        let attr_str = attr.as_str(vm.interns);
+        let is_args = attr_static.map_or_else(|| attr_str == "args", |ss| ss == StaticStrings::Args);
+        let is_context = attr_str == "__context__";
 
         if is_args {
             // Construct tuple with 0 or 1 elements based on whether arg exists
@@ -1496,6 +1538,20 @@ impl<'h> HeapRead<'h, SimpleException> {
                 smallvec![]
             };
             Ok(Some(CallResult::Value(allocate_tuple(elements, vm.heap)?)))
+        } else if is_context {
+            // `__context__` is None if there was no exception being handled
+            // when this one was raised, otherwise a Ref to the chained
+            // exception. Inc_ref on read so the caller's value owns its
+            // own refcount (matches the convention of attribute-getter
+            // results).
+            let value = match self.get(vm.heap).context {
+                Some(ctx_id) => {
+                    vm.heap.inc_ref(ctx_id);
+                    Value::Ref(ctx_id)
+                }
+                None => Value::None,
+            };
+            Ok(Some(CallResult::Value(value)))
         } else {
             Ok(None)
         }
