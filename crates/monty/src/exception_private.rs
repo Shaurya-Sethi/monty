@@ -13,7 +13,8 @@ use crate::{
     defer_drop,
     exception_public::{MontyException, SourceMap, StackFrame},
     fstring::FormatError,
-    heap::{HeapData, HeapId, HeapRead},
+    heap::{ContainsHeap, DropWithHeap, HeapData, HeapId, HeapRead},
+    heap_traits::CloneWithHeap,
     intern::{Interns, StaticStrings, StringId},
     parse::CodeRange,
     resource::ResourceTracker,
@@ -1384,14 +1385,20 @@ impl ExcType {
 /// shows up in tracebacks as "During handling of the above exception,
 /// another exception occurred."
 ///
-/// **Refcount note:** `context` is a heap reference but `SimpleException`
-/// derives `Clone`, which copies the `HeapId` bits without `inc_ref`.
-/// This is intentional — the convention is that a `HeapData::Exception`
-/// owns one refcount on its `context` (balanced by the heap's
-/// `dec_ref` traversal through `py_dec_ref_ids_for_data`). Code that
-/// allocates a new `HeapData::Exception` carrying a context must
-/// `inc_ref` the context HeapId itself.
-#[derive(Debug, Clone, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
+/// **Refcount invariant:** every live `SimpleException` whose `context`
+/// is `Some(_)` owns one refcount on that HeapId. The owner is whatever
+/// holds the `SimpleException`:
+///
+/// - A `HeapData::Exception` heap entry releases its ref via
+///   `py_dec_ref_ids_for_data` when the entry is freed.
+/// - A `SimpleException` in transit (e.g. inside a `RunError::Exc`)
+///   must release its ref via [`SimpleException::drop_with_heap`] when
+///   discarded, or transfer ownership by being moved into a heap entry.
+///
+/// `Clone` is intentionally NOT derived — copying the `HeapId` bits without
+/// `inc_ref` would silently break the invariant. Use
+/// [`SimpleException::clone_with_heap`] instead.
+#[derive(Debug, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
 pub(crate) struct SimpleException {
     exc_type: ExcType,
     arg: Option<String>,
@@ -1460,11 +1467,28 @@ impl SimpleException {
         self.context
     }
 
-    /// Sets the implicit `__context__` chain HeapId. Caller is responsible
-    /// for `inc_ref`-ing the context if this `SimpleException` is going to
-    /// be allocated into a `HeapData::Exception` entry that takes ownership.
-    pub fn set_context(&mut self, context: Option<HeapId>) {
-        self.context = context;
+    /// Replaces the implicit `__context__` chain HeapId.
+    ///
+    /// Manages refcounts according to the invariant described on
+    /// [`SimpleException`]: drops the previous context (if any) and takes
+    /// ownership of one refcount on `new_context` (the caller must have
+    /// already `inc_ref`d it, or be transferring an existing owned ref).
+    pub fn replace_context(&mut self, heap: &mut impl ContainsHeap, new_context: Option<HeapId>) {
+        if let Some(old_id) = self.context {
+            heap.heap_mut().dec_ref(old_id);
+        }
+        self.context = new_context;
+    }
+
+    /// Releases the owning refcount on `context` (if any).
+    ///
+    /// Must be called for any `SimpleException` that is discarded without
+    /// being moved into a `HeapData::Exception` heap entry; otherwise the
+    /// chained exception's refcount leaks.
+    pub fn drop_with_heap(self, heap: &mut impl ContainsHeap) {
+        if let Some(ctx_id) = self.context {
+            heap.heap_mut().dec_ref(ctx_id);
+        }
     }
 
     /// str() for an exception
@@ -1475,6 +1499,16 @@ impl SimpleException {
             (ExcType::KeyError, Some(exc)) => StringRepr(exc).to_string(),
             (_, Some(arg)) => arg.to_owned(),
             (_, None) => String::new(),
+        }
+    }
+}
+
+impl CloneWithHeap for SimpleException {
+    fn clone_with_heap<H: ContainsHeap>(&self, heap: &H) -> Self {
+        Self {
+            exc_type: self.exc_type,
+            arg: self.arg.clone(),
+            context: self.context.clone_with_heap(heap),
         }
     }
 }
@@ -1559,7 +1593,12 @@ impl<'h> HeapRead<'h, SimpleException> {
 }
 
 /// A raised exception with optional stack frame for traceback.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+///
+/// Inherits the refcount invariant from [`SimpleException`]: the contained
+/// `exc` owns one refcount on its `context` HeapId (if any). Use
+/// [`ExceptionRaise::clone_with_heap`] to clone (no `Clone` impl) and
+/// [`ExceptionRaise::drop_with_heap`] to release on discard.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct ExceptionRaise {
     pub exc: SimpleException,
     /// The stack frame where the exception was raised (first in vec is closest "bottom" frame).
@@ -1594,6 +1633,13 @@ impl From<MontyException> for ExceptionRaise {
 }
 
 impl ExceptionRaise {
+    /// Releases the inner exception's owning refcount on its context (if any).
+    /// Must be called for any `ExceptionRaise` that is discarded without
+    /// being consumed via a path that takes responsibility for the refcount.
+    pub(crate) fn drop_with_heap(self, heap: &mut impl ContainsHeap) {
+        self.exc.drop_with_heap(heap);
+    }
+
     /// Adds a caller's frame as the outermost frame in the traceback chain.
     ///
     /// This is used when an exception propagates up through call frames.
@@ -1819,6 +1865,14 @@ impl RunError {
 
     pub fn internal(msg: impl Into<Cow<'static, str>>) -> Self {
         Self::Internal(msg.into())
+    }
+}
+
+impl DropWithHeap for RunError {
+    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
+        if let Self::Exc(exc) | Self::UncatchableExc(exc) = self {
+            exc.drop_with_heap(heap);
+        }
     }
 }
 

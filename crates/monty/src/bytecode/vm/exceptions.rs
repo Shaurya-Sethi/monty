@@ -6,6 +6,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, ExceptionRaise, RawStackFrame, RunError, SimpleException},
     heap::{HeapData, HeapGuard},
+    heap_traits::CloneWithHeap,
     intern::{StaticStrings, StringId},
     resource::ResourceTracker,
     types::{PyTrait, Type},
@@ -80,14 +81,8 @@ impl<T: ResourceTracker> VM<'_, T> {
 
         let simple_exc = match exc_value {
             // Exception instance on heap
-            Value::Ref(heap_id) => {
-                if let HeapData::Exception(exc) = this.heap.get(*heap_id) {
-                    // Clone the exception (guard handles cleanup at scope exit)
-                    exc.clone()
-                } else {
-                    // Not an exception type
-                    SimpleException::new_msg(ExcType::TypeError, "exceptions must derive from BaseException")
-                }
+            Value::Ref(heap_id) if let HeapData::Exception(exc) = this.heap.get(*heap_id) => {
+                exc.clone_with_heap(this.heap)
             }
             // Exception type (e.g., `raise ValueError` instead of `raise ValueError()`)
             // Instantiate with no message
@@ -124,23 +119,28 @@ impl<T: ResourceTracker> VM<'_, T> {
     pub(super) fn handle_exception(&mut self, mut error: RunError) -> Option<RunError> {
         // Ensure exception has initial frame info
         error = self.attach_frame_to_error(error);
+        let mut error_guard = HeapGuard::new(error, self);
+        let (error, this) = error_guard.as_parts_mut();
 
         // For uncatchable exceptions (ResourceError like RecursionError),
         // we still need to unwind the stack to collect all frames for the traceback
-        let exc_info = match &mut error {
+        let exc_info = match error {
             RunError::Exc(exc) => exc,
-            RunError::UncatchableExc(_) | RunError::Internal(_) => return Some(self.unwind_for_traceback(error)),
+            RunError::UncatchableExc(_) | RunError::Internal(_) => {
+                let error = error_guard.into_inner();
+                return Some(self.unwind_for_traceback(error));
+            }
         };
 
         // Create exception value to push on stack
-        let exc_value = match self.create_exception_value(exc_info) {
+        let exc_value = match this.create_exception_value(exc_info) {
             Ok(v) => v,
             Err(e) => return Some(e),
         };
 
         // Use HeapGuard because exc_value is conditionally consumed (pushed onto
         // exception_stack when handler found) or dropped (when no handler found)
-        let mut exc_guard = HeapGuard::new(exc_value, self);
+        let mut exc_guard = HeapGuard::new(exc_value, this);
 
         // Search for handler in current and outer frames
         loop {
@@ -199,6 +199,7 @@ impl<T: ResourceTracker> VM<'_, T> {
 
                 // For spawned tasks, fail the task instead of propagating
                 if is_spawned {
+                    let error = error_guard.into_inner();
                     match self.handle_task_failure(error) {
                         Ok(()) => {
                             // Switched to next task - continue execution
@@ -211,7 +212,7 @@ impl<T: ResourceTracker> VM<'_, T> {
                     }
                 }
 
-                return Some(error);
+                return Some(error_guard.into_inner());
             }
 
             // Get the call site position before popping frame
@@ -222,7 +223,8 @@ impl<T: ResourceTracker> VM<'_, T> {
             if this.pop_frame() {
                 // The frame indicated evaluation should stop - e.g. inside `evaluate_function` - return the error
                 // now to stop unwinding.
-                return Some(error);
+                drop(exc_guard); // To release borrow on `this`
+                return Some(error_guard.into_inner());
             }
 
             // Add caller frame info to traceback (if we have call position)
@@ -268,16 +270,20 @@ impl<T: ResourceTracker> VM<'_, T> {
     /// an `except` (or `finally`) handler, its `__context__` points at
     /// the exception the handler was processing.
     fn create_exception_value(&mut self, exc: &ExceptionRaise) -> Result<Value, RunError> {
-        let mut exception = exc.exc.clone();
-        let context = self.exception_stack.last().and_then(|v| match v {
+        // `clone_with_heap` inc_refs the context HeapId, transferring an
+        // owning ref into the local `exception`. Moving `exception` into
+        // `HeapData::Exception` below transfers that ref to the heap
+        // entry (balanced by `py_dec_ref_ids_for_data` when freed).
+        let mut exception = exc.exc.clone_with_heap(self.heap);
+        let new_context = self.exception_stack.last().and_then(|v| match v {
             Value::Ref(heap_id) => Some(*heap_id),
             _ => None,
         });
-        if let Some(ctx_id) = context {
-            // The new heap entry takes ownership of one ref on the context
-            // (released by `py_dec_ref_ids_for_data` when the entry is freed).
+        if let Some(ctx_id) = new_context {
+            // Take a fresh ref on the new context, then `replace_context`
+            // drops the previously-cloned context ref (if any).
             self.heap.inc_ref(ctx_id);
-            exception.set_context(Some(ctx_id));
+            exception.replace_context(self.heap, Some(ctx_id));
         }
         let heap_id = self.heap.allocate(HeapData::Exception(exception))?;
         Ok(Value::Ref(heap_id))
