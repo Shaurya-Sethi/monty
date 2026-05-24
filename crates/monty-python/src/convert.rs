@@ -4,11 +4,13 @@
 //! - `py_to_monty`: Convert Python objects to Monty's `MontyObject` for input
 //! - `monty_to_py`: Convert Monty's `MontyObject` back to Python objects for output
 
-use ::monty::{MontyDate, MontyDateTime, MontyObject, MontyTimeDelta, MontyTimeZone};
-use monty::MontyException;
+use std::borrow::Cow;
+
+use ::monty::{FileMode, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTimeDelta, MontyTimeZone};
+use monty::{MontyException, StringRepr};
 use num_bigint::BigInt;
 use pyo3::{
-    exceptions::{PyBaseException, PyRuntimeError, PyTypeError},
+    exceptions::{PyBaseException, PyRuntimeError, PyTypeError, PyValueError},
     intern,
     prelude::*,
     sync::PyOnceLock,
@@ -159,6 +161,10 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry, mut depth: 
         // Handle pathlib.PurePosixPath and thereby pathlib.PosixPath objects
         let path_str: String = obj.str()?.extract()?;
         Ok(MontyObject::Path(path_str))
+    } else if let Ok(handle) = obj.cast::<PyMontyFileHandle>() {
+        // Round-trip a `MontyFileHandle` returned from Python (e.g. as the
+        // result of an `Open` OS callback) back into `MontyObject::FileHandle`.
+        Ok(MontyObject::FileHandle(handle.borrow().0.clone()))
     } else if obj.is_callable() {
         // Callable check is last since many Python types (classes, etc.) are technically callable,
         // and we want to match more specific types first (e.g. dataclasses).
@@ -315,6 +321,11 @@ pub(crate) fn monty_to_py_inner(
             let path_obj = pure_posix_path.call1((p,))?;
             Ok(path_obj.into_any().unbind())
         }
+        // A Monty file object has no faithful host-Python representation
+        // (it is not a real OS file). Surface it as a `MontyFileHandle` so
+        // callers can inspect `path`, `mode`, `position`, and `id` directly
+        // instead of parsing the repr string.
+        MontyObject::FileHandle(handle) => Ok(Py::new(py, PyMontyFileHandle::from_inner(handle.clone()))?.into_any()),
         // Output-only types - convert to string representation
         MontyObject::Repr(s) => Ok(PyString::new(py, s).into_any().unbind()),
         MontyObject::Cycle(_, placeholder) => Ok(PyString::new(py, placeholder).into_any().unbind()),
@@ -523,6 +534,111 @@ fn get_pure_posix_path(py: Python<'_>) -> PyResult<&Bound<'_, PyAny>> {
     static PUREPOSIX: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
 
     PUREPOSIX.import(py, "pathlib", "PurePosixPath")
+}
+
+/// Host-side mirror of [`MontyObject::FileHandle`].
+///
+/// `PyMontyFileHandle` is a thin PyO3 wrapper around [`MontyFileHandle`]:
+/// it holds the same `MontyFileHandle` value the interpreter does, so the
+/// host crate has a single source of truth for sandbox-file state rather
+/// than a parallel copy that has to be kept in sync with `FileMode` and
+/// the rest of the carrier.
+///
+/// A Python host sees one when a sandbox-opened file flows back across
+/// the boundary — for example as the return value of an `Open` OS callback,
+/// or as the first positional argument to a `read`/`write` callback. It
+/// is deliberately a plain data holder: the runtime guarantees the host
+/// never owns a live OS file descriptor for a Monty file, so there is
+/// nothing to clean up.
+///
+/// All inner fields are exposed read-only via getters. The three booleans
+/// (`binary`, `readable`, `writable`) are derived from the underlying
+/// [`FileMode`] on demand so callers can branch on mode-dependent behavior
+/// without re-parsing the mode string.
+#[pyclass(name = "MontyFileHandle", module = "pydantic_monty", frozen)]
+pub struct PyMontyFileHandle(MontyFileHandle);
+
+impl PyMontyFileHandle {
+    /// Wraps an existing [`MontyFileHandle`] for surfacing back to Python,
+    /// reusing the interpreter's value instead of repacking its fields.
+    pub(crate) fn from_inner(inner: MontyFileHandle) -> Self {
+        Self(inner)
+    }
+}
+
+#[pymethods]
+impl PyMontyFileHandle {
+    /// Constructs a `MontyFileHandle` from Python.
+    ///
+    /// `mode` is parsed via [`FileMode::from_str`] and rewritten to its
+    /// canonical form, so `MontyFileHandle('/x', 'rt').mode == 'r'`. This
+    /// is the path Python callbacks use to return file handles from the
+    /// `Open` OS function.
+    #[new]
+    #[pyo3(signature = (path, mode, *, position = 0, id = None))]
+    fn py_new(path: String, mode: &str, position: u64, id: Option<u64>) -> PyResult<Self> {
+        let mode: FileMode = mode
+            .parse()
+            .map_err(|e: Cow<'static, str>| PyValueError::new_err(e.to_string()))?;
+        Ok(Self::from_inner(MontyFileHandle {
+            path,
+            mode,
+            position,
+            id,
+        }))
+    }
+
+    /// Virtual sandbox path of the open file. Always POSIX-style; never a host path.
+    #[getter]
+    fn path(&self) -> &str {
+        &self.0.path
+    }
+
+    /// Canonical `open()` mode string (e.g. `'r'`, `'rb'`, `'w+'`).
+    #[getter]
+    fn mode(&self) -> &'static str {
+        self.0.mode.as_str()
+    }
+
+    /// Byte offset for seek-aware reads. `0` for freshly opened files.
+    #[getter]
+    fn position(&self) -> u64 {
+        self.0.position
+    }
+
+    /// Optional host-assigned identifier, or `None` if the host has not populated it.
+    ///
+    /// Monty never sets this; a host may use it to key a cache of real OS handles.
+    #[getter]
+    fn id(&self) -> Option<u64> {
+        self.0.id
+    }
+
+    /// `True` if the underlying mode opens the file in binary form (`'rb'`, `'wb'`, …).
+    #[getter]
+    fn binary(&self) -> bool {
+        self.0.mode.is_binary()
+    }
+
+    /// `True` if the file's mode permits `read()`.
+    #[getter]
+    fn readable(&self) -> bool {
+        self.0.mode.readable()
+    }
+
+    /// `True` if the file's mode permits `write()`.
+    #[getter]
+    fn writable(&self) -> bool {
+        self.0.mode.writable()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "MontyFileHandle(path={}, mode={})",
+            StringRepr(&self.0.path),
+            StringRepr(self.0.mode.as_str())
+        )
+    }
 }
 
 pub fn get_name(f: &Bound<'_, PyAny>) -> String {
