@@ -43,6 +43,14 @@ inside the sandbox).
 - The host can set a wall-clock budget; if exceeded the VM stops on the
   next bytecode boundary with `ResourceError`.
 - There is no in-sandbox way to observe the budget or remaining time.
+- For a stateful `MontyRepl`, the budget is **per execution**: it is
+  measured from the start of each `feed_run` / `feed_start` / `call_function`,
+  not cumulatively from REPL construction. Host time spent *between* those
+  calls does not count, and exhausting the budget in one snippet does not
+  disable the session — later snippets each get a fresh budget.
+- The budget is *not* paused while a single execution is suspended in a host
+  callback (external function / OS call). Time spent in the host during one
+  `feed_start`/resume cycle still counts toward that execution's limit.
 
 ## JSON
 

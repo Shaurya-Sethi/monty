@@ -137,6 +137,11 @@ impl<T: ResourceTracker> MontyRepl<T> {
             });
         }
 
+        // Restart the execution-time budget so `max_duration` applies to this
+        // snippet alone, not cumulatively from REPL construction (which would
+        // also count host time spent between feeds). See issue #483.
+        this.heap.tracker_mut().reset_execution_timer();
+
         let (input_names, input_values): (Vec<_>, Vec<_>) = inputs.into_iter().unzip();
 
         let input_script_name = this.next_input_script_name();
@@ -206,6 +211,11 @@ impl<T: ResourceTracker> MontyRepl<T> {
             return Ok(MontyObject::None);
         }
 
+        // Restart the execution-time budget so `max_duration` applies to this
+        // snippet alone, not cumulatively from REPL construction (which would
+        // also count host time spent between feeds). See issue #483.
+        self.heap.tracker_mut().reset_execution_timer();
+
         let (input_names, input_values): (Vec<_>, Vec<_>) = inputs.into_iter().unzip();
 
         let input_script_name = self.next_input_script_name();
@@ -274,6 +284,10 @@ impl<T: ResourceTracker> MontyRepl<T> {
             return Err(RunError::from(ExcType::name_error(name))
                 .into_python_exception(&self.interns, |fname| self.sources.get(fname).map(String::as_str)));
         };
+
+        // Restart the execution-time budget so `max_duration` applies to this
+        // call alone, not cumulatively from REPL construction. See issue #483.
+        self.heap.tracker_mut().reset_execution_timer();
 
         HeapReader::with(
             &mut self.heap,

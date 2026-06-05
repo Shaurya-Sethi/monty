@@ -255,3 +255,27 @@ def test_timeout_enforced_in_builtin_loops(code: str):
     assert isinstance(exc_info.value.exception(), TimeoutError)
     # Should terminate promptly - well under 2 seconds
     assert elapsed < 2.0
+
+
+def test_repl_time_limit_applies_per_feed():
+    """`max_duration_secs` is enforced per `feed_run`, not from REPL construction.
+
+    Regression test for #483: a long-lived `MontyRepl` must give each snippet
+    its own time budget. Exhausting the budget in one snippet (or host time
+    elapsing between feeds) must not permanently kill the session.
+    """
+    repl = pydantic_monty.MontyRepl(limits=pydantic_monty.ResourceLimits(max_duration_secs=0.1))
+
+    # A cheap snippet runs well within the budget.
+    assert repl.feed_run('x = 1') == snapshot(None)
+
+    # A CPU-bound snippet exhausts this feed's own budget and times out.
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        repl.feed_run('while True:\n    pass')
+    assert isinstance(exc_info.value.exception(), TimeoutError)
+
+    # Host time elapsing between feeds must not count against the next snippet.
+    time.sleep(0.2)
+
+    # The session is not permanently dead: the timer restarts for each feed.
+    assert repl.feed_run('x + 1') == snapshot(2)

@@ -3,10 +3,12 @@
 //! The REPL session keeps heap/global namespace state between snippets and executes
 //! only the newly fed snippet each time.
 
+use std::time::Duration;
+
 use insta::assert_snapshot;
 use monty::{
-    ExtFunctionResult, MontyException, MontyObject, MontyRepl, NoLimitTracker, PrintWriter, ReplContinuationMode,
-    ReplProgress, ReplStartError, ResourceTracker, detect_repl_continuation_mode,
+    ExcType, ExtFunctionResult, LimitedTracker, MontyException, MontyObject, MontyRepl, NoLimitTracker, PrintWriter,
+    ReplContinuationMode, ReplProgress, ReplStartError, ResourceLimits, ResourceTracker, detect_repl_continuation_mode,
 };
 
 #[test]
@@ -860,4 +862,34 @@ fn call_builtin_via_session() {
         )
         .unwrap();
     assert_eq!(result, MontyObject::Int(2));
+}
+
+#[test]
+fn repl_time_limit_applies_per_feed_not_cumulatively() {
+    // Regression test for #483: `max_duration` must be enforced per snippet,
+    // measured from when each `feed_run` starts executing — not as a single
+    // budget shared from REPL construction. A snippet that exhausts the budget
+    // (or host time elapsing between feeds) must not permanently "kill" the
+    // session so that every later snippet fails.
+    let limits = ResourceLimits::new().max_duration(Duration::from_millis(50));
+    let mut repl = MontyRepl::new("repl.py", LimitedTracker::new(limits));
+
+    // A cheap snippet establishes state well within the budget.
+    assert_eq!(
+        repl.feed_run("x = 1", vec![], PrintWriter::Stdout).unwrap(),
+        MontyObject::None
+    );
+
+    // A CPU-bound snippet exhausts this feed's own budget and times out.
+    let err = repl
+        .feed_run("while True:\n    pass", vec![], PrintWriter::Stdout)
+        .unwrap_err();
+    assert_eq!(err.exc_type(), ExcType::TimeoutError);
+
+    // The session is NOT permanently dead: the timer restarts for the next
+    // feed, so a trivial snippet still runs to completion.
+    assert_eq!(
+        repl.feed_run("x + 1", vec![], PrintWriter::Stdout).unwrap(),
+        MontyObject::Int(2)
+    );
 }

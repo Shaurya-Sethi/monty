@@ -262,6 +262,19 @@ pub trait ResourceTracker: fmt::Debug {
     /// an immutable heap reference, such as `py_repr_fmt`.
     fn check_time(&self) -> Result<(), ResourceError>;
 
+    /// Resets the execution-time budget so the elapsed clock restarts from now.
+    ///
+    /// Used by stateful hosts such as `MontyRepl` that reuse a single tracker
+    /// across many independent executions: without this, `max_duration` would be
+    /// measured from tracker construction and shared across every snippet,
+    /// counting host time between calls and permanently "killing" the session
+    /// once the budget elapsed. Each top-level REPL execution calls this so the
+    /// duration limit applies per execution, not cumulatively.
+    ///
+    /// The default implementation is a no-op, which is correct for trackers that
+    /// impose no time limit.
+    fn reset_execution_timer(&mut self) {}
+
     /// Called before pushing a new call frame to check recursion depth.
     ///
     /// Returns `Ok(())` if within recursion limit, or `Err(ResourceError::Recursion)`
@@ -559,7 +572,7 @@ impl LimitedTracker {
     /// for the resumed phase without counting the time spent in the host.
     pub fn set_max_duration(&mut self, duration: Duration) {
         self.limits.max_duration = Some(duration);
-        self.start_time = Instant::now();
+        self.reset_execution_timer();
     }
 }
 
@@ -616,6 +629,10 @@ impl ResourceTracker for LimitedTracker {
         // so current_memory() remains accurate even without a memory limit.
         self.current_memory.set(new_memory);
         Ok(())
+    }
+
+    fn reset_execution_timer(&mut self) {
+        self.start_time = Instant::now();
     }
 
     fn check_time(&self) -> Result<(), ResourceError> {
