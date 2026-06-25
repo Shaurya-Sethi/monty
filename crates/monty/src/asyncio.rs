@@ -192,7 +192,7 @@ pub(crate) enum Awaiter {
 impl DropWithHeap for Awaiter {
     fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
         if let Self::GatherSlot { gather, .. } = self {
-            heap.heap_mut().dec_ref(gather);
+            heap.dec_ref(gather);
         }
     }
 }

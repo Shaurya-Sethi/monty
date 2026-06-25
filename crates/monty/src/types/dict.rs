@@ -17,7 +17,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
     heap::{
-        ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, HeapReadOutput,
+        ContainsHeap, DropWithHeap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, HeapReadOutput, HeapReader,
         RecursionToken,
     },
     intern::{Interns, StaticStrings},
@@ -179,7 +179,7 @@ impl Dict {
         &self,
         hash: u64,
         key: &Value,
-        heap: &Heap<impl ResourceTracker>,
+        heap: &HeapReader<'_, impl ResourceTracker>,
         interns: &Interns,
     ) -> Option<usize> {
         let key_str = json_key_string_slice(key, heap, interns).expect("json object keys are always string values");
@@ -198,7 +198,7 @@ impl Dict {
 /// defensive and returns `None` for any non-string value.
 fn json_key_string_slice<'a>(
     key: &'a Value,
-    heap: &'a Heap<impl ResourceTracker>,
+    heap: &'a HeapReader<'_, impl ResourceTracker>,
     interns: &'a Interns,
 ) -> Option<&'a str> {
     match key {
@@ -215,7 +215,12 @@ fn json_key_string_slice<'a>(
 ///
 /// This bypasses Python's full equality machinery because JSON object keys are
 /// always strings, so content comparison is sufficient and much cheaper.
-fn json_key_equals_str(key: &Value, expected: &str, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> bool {
+fn json_key_equals_str(
+    key: &Value,
+    expected: &str,
+    heap: &HeapReader<'_, impl ResourceTracker>,
+    interns: &Interns,
+) -> bool {
     match key {
         Value::InternString(id) => interns.get_str(*id) == expected,
         Value::Ref(id) => match heap.get(*id) {
@@ -250,7 +255,12 @@ impl Dict {
     ///
     /// This is an O(1) lookup that doesn't require mutable heap access.
     /// Only works for string keys - returns None if the key is not found.
-    pub fn get_by_str(&self, key_str: &str, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> Option<&Value> {
+    pub fn get_by_str(
+        &self,
+        key_str: &str,
+        heap: &HeapReader<'_, impl ResourceTracker>,
+        interns: &Interns,
+    ) -> Option<&Value> {
         // Compute hash for the string key
         let mut hasher = DefaultHasher::new();
         key_str.hash(&mut hasher);

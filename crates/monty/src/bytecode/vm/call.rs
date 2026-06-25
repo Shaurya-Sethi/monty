@@ -88,7 +88,6 @@ impl DropWithHeap for CallResult {
             Self::FramePushed => {}
             Self::OsCallStoreBuffer { call, file_id } => {
                 call.drop_with_heap(heap);
-                let heap = heap.heap_mut();
                 heap.dec_ref(file_id);
                 heap.dec_ref(file_id);
             }
@@ -766,7 +765,7 @@ impl<T: ResourceTracker> VM<'_, T> {
         // stack (pushed per-comp), not in any frame-level region, so they
         // don't enter this accounting.
         let size = namespace_size * mem::size_of::<Value>();
-        self.heap.tracker_mut().on_allocate(|| size)?;
+        self.heap.tracker().on_allocate(|| size)?;
 
         // 1. Create namespace for the frame in a temporary vec, will extend to stack later
         let namespace = Vec::with_capacity(func.namespace_size);
@@ -778,7 +777,7 @@ impl<T: ResourceTracker> VM<'_, T> {
             let bind_result = func.signature.bind(args, defaults, this, func.name, namespace);
 
             if let Err(e) = bind_result {
-                this.heap.tracker_mut().on_free(|| size);
+                this.heap.tracker().on_free(|| size);
                 return Err(e);
             }
         }

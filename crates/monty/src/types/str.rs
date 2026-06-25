@@ -14,7 +14,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult},
     hash::{HashValue, hash_python_str},
-    heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, heap_read_ref_as_field},
+    heap::{DropWithHeap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, HeapReader, heap_read_ref_as_field},
     intern::{StaticStrings, StringId},
     resource::{ResourceError, ResourceTracker, check_replace_size},
     string_builder::StringBuilder,
@@ -116,7 +116,7 @@ struct StrInitArgs {
 /// `RunResult` and other error types that implement `From<ResourceError>`.
 pub fn allocate_string(
     s: impl AsRef<str> + Into<Box<str>>,
-    heap: &Heap<impl ResourceTracker>,
+    heap: &HeapReader<'_, impl ResourceTracker>,
 ) -> Result<Value, ResourceError> {
     let bytes = s.as_ref().as_bytes();
     match bytes.len() {
@@ -135,7 +135,7 @@ pub fn allocate_string(
 /// Accepts `impl Into<Box<str>>` for the same reasons as [`allocate_string`].
 pub fn allocate_string_no_interning(
     s: impl Into<Box<str>>,
-    heap: &Heap<impl ResourceTracker>,
+    heap: &HeapReader<'_, impl ResourceTracker>,
 ) -> Result<Value, ResourceError> {
     let heap_id = heap.allocate(HeapData::Str(Str::new(s)))?;
     Ok(Value::Ref(heap_id))
@@ -147,7 +147,7 @@ pub fn allocate_string_no_interning(
 /// Non-ASCII characters are allocated on the heap.
 ///
 /// This is used by string iteration and `chr()` builtin.
-pub fn allocate_char(c: char, heap: &Heap<impl ResourceTracker>) -> Result<Value, ResourceError> {
+pub fn allocate_char(c: char, heap: &HeapReader<'_, impl ResourceTracker>) -> Result<Value, ResourceError> {
     if c.is_ascii() {
         Ok(Value::InternString(StringId::from_ascii(c as u8)))
     } else {

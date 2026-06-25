@@ -353,14 +353,19 @@ struct Encoder<'a, 'h, R: ResourceTracker> {
 /// encoder (including its `vm`) into the guard, which is exactly what we need
 /// so the rebound iter and the rebound encoder share a lifetime.
 impl<R: ResourceTracker> ContainsHeap for Encoder<'_, '_, R> {
-    type ResourceTracker = R;
+    type Tracker = R;
 
-    fn heap(&self) -> &Heap<R> {
+    fn heap(&self) -> &Heap {
         self.vm.heap()
     }
 
-    fn heap_mut(&mut self) -> &mut Heap<R> {
-        self.vm.heap_mut()
+    fn heap_and_tracker(&mut self) -> (&mut Heap, &R) {
+        self.vm.heap_and_tracker()
+    }
+
+    #[inline]
+    fn dec_ref(&mut self, id: HeapId) {
+        self.vm.dec_ref(id);
     }
 }
 

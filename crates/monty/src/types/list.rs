@@ -10,7 +10,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{
-        ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, HeapReadOutput, HeapReader,
+        ContainsHeap, DropWithHeap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, HeapReadOutput, HeapReader,
         RecursionToken,
     },
     intern::StaticStrings,
@@ -697,7 +697,7 @@ fn list_clear<'h>(list: &mut HeapRead<'h, List>, vm: &mut VM<'h, impl ResourceTr
 /// Implements Python's `list.copy()` method.
 ///
 /// Returns a shallow copy of the list.
-fn list_copy(list: &List, heap: &Heap<impl ResourceTracker>) -> Result<Value, ResourceError> {
+fn list_copy(list: &List, heap: &HeapReader<'_, impl ResourceTracker>) -> Result<Value, ResourceError> {
     let items: Vec<Value> = list.items.iter().map(|v| v.clone_with_heap(heap)).collect();
     let heap_id = heap.allocate(HeapData::List(List::new(items)))?;
     Ok(Value::Ref(heap_id))
@@ -902,15 +902,12 @@ mod tests {
     /// Creates a heap with a list and a LongInt index, bypassing into_value() demotion.
     ///
     /// This allows testing the defensive code path where a LongInt contains an i64-fitting value.
-    fn create_heap_with_list_and_longint(
-        list_items: Vec<Value>,
-        index_value: BigInt,
-    ) -> (Heap<NoLimitTracker>, HeapId, HeapId) {
-        let heap = Heap::new(16, NoLimitTracker);
+    fn create_heap_with_list_and_longint(list_items: Vec<Value>, index_value: BigInt) -> (Heap, HeapId, HeapId) {
+        let heap = Heap::new(16);
         let list = List::new(list_items);
-        let list_id = heap.allocate(HeapData::List(list)).unwrap();
+        let list_id = heap.allocate(&NoLimitTracker, HeapData::List(list)).unwrap();
         let long_int = LongInt::new(index_value);
-        let index_id = heap.allocate(HeapData::LongInt(long_int)).unwrap();
+        let index_id = heap.allocate(&NoLimitTracker, HeapData::LongInt(long_int)).unwrap();
         (heap, list_id, index_id)
     }
 
@@ -929,7 +926,7 @@ mod tests {
         let new_value = Value::Int(99);
         heap.inc_ref(index_id);
 
-        let result = HeapReader::with(&mut heap, &mut interns, |reader, interns| {
+        let result = HeapReader::with(&mut heap, &NoLimitTracker, &mut interns, |reader, interns| {
             let mut vm = VM::new(Vec::new(), reader, interns, PrintWriter::Disabled);
             let HeapReadOutput::List(mut list) = vm.heap.read(list_id) else {
                 panic!("expected list");
@@ -946,7 +943,9 @@ mod tests {
         assert!(matches!(list.as_slice()[1], Value::Int(99)));
 
         // Clean up
-        Value::Ref(list_id).drop_with_heap(&mut heap);
+        HeapReader::with(&mut heap, &NoLimitTracker, &mut (), |r, ()| {
+            Value::Ref(list_id).drop_with_heap(r);
+        });
     }
 
     /// Tests py_setitem with a negative LongInt index that fits in i64.
@@ -962,7 +961,7 @@ mod tests {
         let new_value = Value::Int(99);
         heap.inc_ref(index_id);
 
-        let result = HeapReader::with(&mut heap, &mut interns, |reader, interns| {
+        let result = HeapReader::with(&mut heap, &NoLimitTracker, &mut interns, |reader, interns| {
             let mut vm = VM::new(Vec::new(), reader, interns, PrintWriter::Disabled);
             let HeapReadOutput::List(mut list) = vm.heap.read(list_id) else {
                 panic!("expected list");
@@ -978,7 +977,9 @@ mod tests {
         };
         assert!(matches!(list.as_slice()[2], Value::Int(99)));
 
-        Value::Ref(list_id).drop_with_heap(&mut heap);
+        HeapReader::with(&mut heap, &NoLimitTracker, &mut (), |r, ()| {
+            Value::Ref(list_id).drop_with_heap(r);
+        });
     }
 
     /// Tests py_setitem with i64::MAX as a LongInt index.
@@ -992,7 +993,7 @@ mod tests {
         let new_value = Value::Int(99);
         heap.inc_ref(index_id);
 
-        let result = HeapReader::with(&mut heap, &mut interns, |reader, interns| {
+        let result = HeapReader::with(&mut heap, &NoLimitTracker, &mut interns, |reader, interns| {
             let mut vm = VM::new(Vec::new(), reader, interns, PrintWriter::Disabled);
             let HeapReadOutput::List(mut list) = vm.heap.read(list_id) else {
                 panic!("expected list");
@@ -1002,6 +1003,8 @@ mod tests {
 
         assert!(result.is_err());
 
-        Value::Ref(list_id).drop_with_heap(&mut heap);
+        HeapReader::with(&mut heap, &NoLimitTracker, &mut (), |r, ()| {
+            Value::Ref(list_id).drop_with_heap(r);
+        });
     }
 }

@@ -20,7 +20,7 @@ use crate::{
     args::ArgValues,
     bytecode::VM,
     exception_private::{ExcType, RunResult},
-    heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, HeapReadOutput},
+    heap::{ContainsHeap, DropWithHeap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, HeapReadOutput, HeapReader},
     intern::{BytesId, Interns},
     resource::{ResourceError, ResourceTracker, check_estimated_size},
     types::{PyTrait, Range, dict_view::DictView, str::allocate_char},
@@ -195,7 +195,7 @@ impl MontyIter {
     /// For immutable types (Range, Tuple, Str, Bytes, FrozenSet), returns the exact remaining count.
     /// For List, returns current length minus index (may change if list is mutated).
     /// For Dict and Set, returns the captured length minus index (used for size-change detection).
-    pub fn size_hint(&self, heap: &Heap<impl ResourceTracker>) -> usize {
+    pub fn size_hint(&self, heap: &HeapReader<'_, impl ResourceTracker>) -> usize {
         let len = match &self.iter_value {
             IterValue::Range { len, .. } | IterValue::IterStr { len, .. } | IterValue::InternBytes { len, .. } => *len,
             IterValue::HeapRef { heap_id, len, .. } => {
@@ -630,7 +630,7 @@ impl IterValue {
     }
 
     /// Creates an iterator value from heap data.
-    fn from_heap_data(heap_id: HeapId, heap: &Heap<impl ResourceTracker>) -> Option<Self> {
+    fn from_heap_data(heap_id: HeapId, heap: &HeapReader<'_, impl ResourceTracker>) -> Option<Self> {
         match heap.get(heap_id) {
             // List: no captured len (checked dynamically), no mutation check
             HeapData::List(_) => Some(Self::HeapRef {

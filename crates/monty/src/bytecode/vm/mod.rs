@@ -1884,7 +1884,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         // spawned coroutine).
         if frame.locals_count > 0 {
             let size = usize::from(frame.locals_count) * mem::size_of::<Value>();
-            self.heap.tracker_mut().on_free(|| size);
+            self.heap.tracker().on_free(|| size);
         }
     }
 
@@ -2154,12 +2154,19 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
 
 // `heap` is not a public field on VM, so this implementation needs to go here rather than in `heap.rs`
 impl<T: ResourceTracker> ContainsHeap for VM<'_, T> {
-    type ResourceTracker = T;
-    fn heap(&self) -> &Heap<T> {
-        self.heap
+    type Tracker = T;
+    fn heap(&self) -> &Heap {
+        self.heap.heap
     }
-    fn heap_mut(&mut self) -> &mut Heap<T> {
-        self.heap
+    fn heap_and_tracker(&mut self) -> (&mut Heap, &T) {
+        (self.heap.heap, self.heap.tracker)
+    }
+
+    /// Override the trait default to avoid spinning up a nested `HeapReader::with`
+    /// scope — the VM already holds a live `HeapReader` and can decrement directly.
+    #[inline]
+    fn dec_ref(&mut self, id: HeapId) {
+        self.heap.dec_ref(id);
     }
 }
 

@@ -1,10 +1,15 @@
-error[E0502]: cannot borrow `*heap` as mutable because it is also borrowed as immutable
-  --> crates/monty/src/../tests/heap_reader_compile_fail_cases/cases.rs:30:41
-   |
-29 |         let slice = a.get(heap).as_slice();
-   |                           ---- immutable borrow occurs here
-30 |         let _ = allocate_string("boom", heap.heap_mut());
-   |                                         ^^^^^^^^^^^^^^^ mutable borrow occurs here
-31 |         let _ = slice.len();
-   |                 ----- immutable borrow later used here
-For more information about this error, try `rustc --explain E0502`.
+error[E0107]: function takes 0 generic arguments but 1 generic argument was supplied
+   --> crates/monty/src/../tests/heap_reader_compile_fail_cases/cases.rs:27:13
+    |
+ 27 |     let _ = allocate_string::<crate::resource::NoLimitTracker>;
+    |             ^^^^^^^^^^^^^^^----------------------------------- help: remove the unnecessary generics
+    |             |
+    |             expected 0 generic arguments
+    |
+note: function defined here, with 0 generic parameters
+   --> crates/monty/src/types/str.rs:117:8
+    |
+117 | pub fn allocate_string(
+    |        ^^^^^^^^^^^^^^^
+    = note: `impl Trait` cannot be explicitly specified as a generic argument
+For more information about this error, try `rustc --explain E0107`.

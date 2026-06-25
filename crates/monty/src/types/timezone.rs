@@ -18,7 +18,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     hash::HashValue,
-    heap::{Heap, HeapData, HeapId, HeapItem, HeapRead},
+    heap::{HeapData, HeapId, HeapItem, HeapRead, HeapReader},
     intern::Interns,
     resource::ResourceTracker,
     types::{
@@ -136,7 +136,7 @@ impl Hash for TimeZone {
     }
 }
 
-fn extract_offset_seconds(offset_arg: &Value, heap: &Heap<impl ResourceTracker>) -> RunResult<i32> {
+fn extract_offset_seconds(offset_arg: &Value, heap: &HeapReader<'_, impl ResourceTracker>) -> RunResult<i32> {
     let bad_type = || {
         ExcType::type_error(format!(
             "timezone() argument 1 must be datetime.timedelta, not {}",
@@ -195,7 +195,11 @@ pub(crate) fn format_offset_timedelta_repr(offset_seconds: i32) -> String {
     timedelta::format_repr(&delta)
 }
 
-fn extract_name(name_arg: &Value, heap: &Heap<impl ResourceTracker>, interns: &Interns) -> RunResult<Option<String>> {
+fn extract_name(
+    name_arg: &Value,
+    heap: &HeapReader<'_, impl ResourceTracker>,
+    interns: &Interns,
+) -> RunResult<Option<String>> {
     match name_arg {
         Value::InternString(id) => Ok(Some(interns.get_str(*id).to_owned())),
         Value::Ref(id) => match heap.get(*id) {
@@ -208,7 +212,7 @@ fn extract_name(name_arg: &Value, heap: &Heap<impl ResourceTracker>, interns: &I
 
 /// Builds the `timezone() argument 2 must be str, not <type>` error CPython
 /// raises for any non-`str` `name` argument (including explicit `None`).
-fn bad_name_arg(name_arg: &Value, heap: &Heap<impl ResourceTracker>) -> RunError {
+fn bad_name_arg(name_arg: &Value, heap: &HeapReader<'_, impl ResourceTracker>) -> RunError {
     ExcType::type_error(format!(
         "timezone() argument 2 must be str, not {}",
         name_arg.py_type_heap(heap).cpython_arg_name()

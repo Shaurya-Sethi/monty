@@ -21,7 +21,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult, SimpleException},
     hash::HashValue,
-    heap::{DropWithHeap, Heap, HeapData, HeapId, HeapItem, HeapRead},
+    heap::{DropWithHeap, HeapData, HeapId, HeapItem, HeapRead, HeapReader},
     intern::{Interns, StaticStrings},
     object::MontyObject,
     os::OsFunctionCall,
@@ -92,7 +92,7 @@ pub(crate) fn from_components(
     microsecond: i32,
     tzinfo: Option<TimeZone>,
     tzinfo_ref: Option<HeapId>,
-    heap: &mut Heap<impl ResourceTracker>,
+    heap: &mut HeapReader<'_, impl ResourceTracker>,
 ) -> RunResult<DateTime> {
     if !(0..=23).contains(&hour) {
         return Err(SimpleException::new_msg(ExcType::ValueError, format!("hour must be in 0..23, not {hour}")).into());
@@ -342,7 +342,7 @@ fn extract_now_tz(vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> Run
 /// `NaiveDateTime::parse_from_str`, expanding Python `%f` directives into the
 /// chrono widths needed to accept 1 through 6 fractional digits.
 pub(crate) fn class_strptime(
-    heap: &mut Heap<impl ResourceTracker>,
+    heap: &mut HeapReader<'_, impl ResourceTracker>,
     args: ArgValues,
     interns: &Interns,
 ) -> RunResult<Value> {
@@ -388,7 +388,7 @@ pub(crate) fn class_strptime(
 /// - `YYYY-MM-DDTHH:MM:SS.ffffff`
 /// - Any of the above with `+HH:MM` or `+HH:MM:SS` timezone suffix
 pub(crate) fn class_fromisoformat(
-    heap: &mut Heap<impl ResourceTracker>,
+    heap: &mut HeapReader<'_, impl ResourceTracker>,
     args: ArgValues,
     interns: &Interns,
 ) -> RunResult<Value> {
@@ -408,7 +408,7 @@ pub(crate) fn class_fromisoformat(
 /// Uses speedate's RFC 3339 parser for Python-compatible ISO 8601 parsing (the
 /// same parser used by pydantic). Falls back to date-only parsing for bare
 /// `YYYY-MM-DD` inputs.
-fn parse_iso_datetime(s: &str, heap: &mut Heap<impl ResourceTracker>) -> Option<DateTime> {
+fn parse_iso_datetime(s: &str, heap: &mut HeapReader<'_, impl ResourceTracker>) -> Option<DateTime> {
     let bytes = s.as_bytes();
 
     // Try full datetime first, then fall back to date-only (defaults to midnight)
@@ -517,7 +517,7 @@ fn chrono_strptime_formats(fmt: &str) -> Vec<String> {
 pub(crate) fn py_add(
     datetime: &DateTime,
     delta: &TimeDelta,
-    heap: &mut Heap<impl ResourceTracker>,
+    heap: &mut HeapReader<'_, impl ResourceTracker>,
 ) -> Result<Option<Value>, ResourceError> {
     let chrono_delta = timedelta::chrono_delta(delta);
 
@@ -547,7 +547,7 @@ pub(crate) fn py_add(
 pub(crate) fn py_sub_timedelta(
     datetime: &DateTime,
     delta: &TimeDelta,
-    heap: &mut Heap<impl ResourceTracker>,
+    heap: &mut HeapReader<'_, impl ResourceTracker>,
 ) -> Result<Option<Value>, ResourceError> {
     let chrono_delta = timedelta::chrono_delta(delta);
 
@@ -579,7 +579,7 @@ pub(crate) fn py_sub_timedelta(
 pub(crate) fn py_sub_datetime(
     a: &DateTime,
     b: &DateTime,
-    heap: &mut Heap<impl ResourceTracker>,
+    heap: &mut HeapReader<'_, impl ResourceTracker>,
 ) -> Result<Option<Value>, ResourceError> {
     if is_aware(a) != is_aware(b) {
         return Ok(None);
@@ -605,7 +605,7 @@ pub(crate) fn py_sub_datetime(
 
 fn tzinfo_from_value(
     value: &Value,
-    heap: &Heap<impl ResourceTracker>,
+    heap: &HeapReader<'_, impl ResourceTracker>,
 ) -> RunResult<(Option<TimeZone>, Option<HeapId>)> {
     match value {
         Value::None => Ok((None, None)),
@@ -622,7 +622,7 @@ fn tzinfo_from_value(
 /// Used by `class_now` to validate the `tz` argument before passing it through
 /// to the OS call. Unlike `tzinfo_from_value`, this does not extract the timezone
 /// data — it only checks the type.
-fn validate_tz_arg(value: &Value, heap: &Heap<impl ResourceTracker>) -> RunResult<()> {
+fn validate_tz_arg(value: &Value, heap: &HeapReader<'_, impl ResourceTracker>) -> RunResult<()> {
     match value {
         Value::None => Ok(()),
         Value::Ref(id) => match heap.get(*id) {
@@ -641,7 +641,7 @@ fn validate_tz_arg(value: &Value, heap: &Heap<impl ResourceTracker>) -> RunResul
 fn attach_or_allocate_tzinfo_ref(
     datetime: &mut DateTime,
     preferred_tzinfo_ref: Option<HeapId>,
-    heap: &mut Heap<impl ResourceTracker>,
+    heap: &mut HeapReader<'_, impl ResourceTracker>,
 ) -> Result<(), ResourceError> {
     let Some(offset_seconds) = datetime.offset_seconds else {
         datetime.tzinfo_ref = None;
@@ -663,7 +663,7 @@ fn attach_or_allocate_tzinfo_ref(
 fn allocate_tzinfo_ref(
     offset_seconds: i32,
     timezone_name: Option<String>,
-    heap: &mut Heap<impl ResourceTracker>,
+    heap: &mut HeapReader<'_, impl ResourceTracker>,
 ) -> Result<HeapId, ResourceError> {
     if offset_seconds == 0 && timezone_name.is_none() {
         let utc = heap.get_timezone_utc()?;

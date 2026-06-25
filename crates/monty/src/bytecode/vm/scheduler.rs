@@ -13,7 +13,7 @@ use ahash::AHashMap;
 use crate::{
     asyncio::{Awaiter, CallId, ExternalFutureState, TaskId},
     exception_private::RunError,
-    heap::{ContainsHeap, DropWithHeap, Heap, HeapId, HeapReadOutput, HeapReader},
+    heap::{ContainsHeap, DropWithHeap, HeapId, HeapReadOutput, HeapReader},
     intern::FunctionId,
     parse::CodeRange,
     resource::ResourceTracker,
@@ -47,7 +47,7 @@ impl DropWithHeap for TaskState {
     fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
         match self {
             Self::Ready | Self::Failed(_) => {}
-            Self::Blocked(id) => heap.heap_mut().dec_ref(id),
+            Self::Blocked(id) => heap.dec_ref(id),
             Self::Completed(value) => value.drop_with_heap(heap),
         }
     }
@@ -98,10 +98,10 @@ impl DropWithHeap for Task {
         }
         self.state.drop_with_heap(heap);
         if let Some(coro_id) = self.coroutine_id.take() {
-            heap.heap_mut().dec_ref(coro_id);
+            heap.dec_ref(coro_id);
         }
         if let Some(gid) = self.gather_id.take() {
-            heap.heap_mut().dec_ref(gid);
+            heap.dec_ref(gid);
         }
     }
 }
@@ -258,7 +258,12 @@ impl Scheduler {
     /// The scheduler inc_refs `future_id` so the entry stays alive between
     /// the yield to the host and the matching `resolve_future` / `fail_future`
     /// call, even if no awaiter holds a `Value::Ref` to it.
-    pub fn add_pending_external(&mut self, call_id: CallId, future_id: HeapId, heap: &Heap<impl ResourceTracker>) {
+    pub fn add_pending_external(
+        &mut self,
+        call_id: CallId,
+        future_id: HeapId,
+        heap: &HeapReader<'_, impl ResourceTracker>,
+    ) {
         heap.inc_ref(future_id);
         let prev = self.pending_externals.insert(call_id, future_id);
         debug_assert!(prev.is_none(), "add_pending_external: CallId already registered");
@@ -277,7 +282,7 @@ impl Scheduler {
     /// The task will be unblocked when the awaitable settles and its awaiter
     /// slot routes back here (`Awaiter::Task(task_id)` on either
     /// `ExternalFuture::Pending` or `AwaitedGather`).
-    pub fn block_current_on(&mut self, awaitable_id: HeapId, heap: &Heap<impl ResourceTracker>) {
+    pub fn block_current_on(&mut self, awaitable_id: HeapId, heap: &HeapReader<'_, impl ResourceTracker>) {
         if let Some(task_id) = self.current_task {
             let task = self.get_task_mut(task_id);
             heap.inc_ref(awaitable_id);
@@ -317,7 +322,7 @@ impl Scheduler {
     /// The TaskId of the newly created task.
     pub fn spawn(
         &mut self,
-        heap: &Heap<impl ResourceTracker>,
+        heap: &HeapReader<'_, impl ResourceTracker>,
         coroutine_id: HeapId,
         gather_id: Option<HeapId>,
     ) -> TaskId {
@@ -357,14 +362,19 @@ impl Scheduler {
 
     /// Replaces a task's state, properly releasing any heap references owned
     /// by the previous state.
-    pub fn set_state(&mut self, task_id: TaskId, new_state: TaskState, heap: &mut Heap<impl ResourceTracker>) {
+    pub fn set_state(
+        &mut self,
+        task_id: TaskId,
+        new_state: TaskState,
+        heap: &mut HeapReader<'_, impl ResourceTracker>,
+    ) {
         let task = self.get_task_mut(task_id);
         let old_state = mem::replace(&mut task.state, new_state);
         old_state.drop_with_heap(heap);
     }
 
     /// Adds a task back to the ready queue.
-    pub fn make_ready(&mut self, task_id: TaskId, heap: &mut Heap<impl ResourceTracker>) {
+    pub fn make_ready(&mut self, task_id: TaskId, heap: &mut HeapReader<'_, impl ResourceTracker>) {
         self.set_state(task_id, TaskState::Ready, heap);
         self.ready_queue.push_back(task_id);
     }
@@ -385,7 +395,7 @@ impl Scheduler {
         &mut self,
         task_id: TaskId,
         error: RunError,
-        heap: &mut Heap<impl ResourceTracker>,
+        heap: &mut HeapReader<'_, impl ResourceTracker>,
     ) -> Option<HeapId> {
         let gather_id = self.get_task(task_id).gather_id;
         self.set_state(task_id, TaskState::Failed(error), heap);

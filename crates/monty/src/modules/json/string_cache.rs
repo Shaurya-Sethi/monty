@@ -88,7 +88,7 @@ impl JsonStringCache {
     ) -> Result<Value, ResourceError> {
         let len = s.len();
         if !(MIN_LEN..=MAX_LEN).contains(&len) {
-            return allocate_string(s, heap.heap());
+            return allocate_string(s, heap);
         }
 
         let inner = self.inner.get_or_insert_with(CacheInner::new);
@@ -156,7 +156,7 @@ impl CacheInner {
         }
         // All 5 probe slots occupied — allocate without caching.
         // Length is in [MIN_LEN..=MAX_LEN] here so interning would never apply.
-        allocate_string_no_interning(s, heap.heap())
+        allocate_string_no_interning(s, heap)
     }
 
     /// Allocates `s` on the heap, stores a clone in `entries[index]`, and
@@ -170,7 +170,7 @@ impl CacheInner {
     ) -> Result<Value, ResourceError> {
         let key = s.clone().into_boxed_str();
         // Length is in [MIN_LEN..=MAX_LEN] here so interning would never apply.
-        let value = allocate_string_no_interning(s, heap.heap())?;
+        let value = allocate_string_no_interning(s, heap)?;
         let cached = value.clone_with_heap(heap);
         self.entries[index] = Some((hash, key, cached));
         Ok(value)

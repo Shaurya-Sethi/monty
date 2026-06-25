@@ -52,22 +52,43 @@ pub(crate) trait HeapItem {
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>);
 }
 
-/// This trait represents types that contain a `Heap`; it allows for more complex structures
-/// to participate in the `HeapGuard` pattern.
+/// This trait represents types that contain both a [`Heap`] and a borrowed
+/// [`ResourceTracker`]. It allows containers (VMs, encoders, REPL handles)
+/// to participate in the [`HeapGuard`] / [`DropWithHeap`] pattern.
+///
+/// Bare [`Heap`] alone **cannot** implement this trait — resource-sensitive
+/// operations (like `dec_ref`'s call to `tracker.on_free`) need both the
+/// storage and the tracker, and those live as siblings in the persistent
+/// owner rather than nested.
+///
+/// The single [`heap_and_tracker`](Self::heap_and_tracker) entry-point returns
+/// disjoint borrows of both pieces in one call, so callers can construct a
+/// [`HeapReader`] without juggling overlapping `&mut self` re-borrows of the
+/// containing struct.
 pub(crate) trait ContainsHeap {
-    type ResourceTracker: ResourceTracker;
-    fn heap(&self) -> &Heap<Self::ResourceTracker>;
-    fn heap_mut(&mut self) -> &mut Heap<Self::ResourceTracker>;
-}
+    /// Tracker type held by this container.
+    type Tracker: ResourceTracker;
 
-impl<T: ResourceTracker> ContainsHeap for Heap<T> {
-    type ResourceTracker = T;
-    fn heap(&self) -> &Self {
-        self
-    }
+    /// Immutable view of just the storage.
+    fn heap(&self) -> &Heap;
+
+    /// Disjoint mutable heap borrow and shared tracker borrow.
+    ///
+    /// Implementers must return references to genuinely disjoint fields
+    /// (typically `&mut self.heap` and `&self.tracker`) so the borrow checker
+    /// can verify the two pieces are non-aliasing.
+    fn heap_and_tracker(&mut self) -> (&mut Heap, &Self::Tracker);
+
+    /// Convenience: decrement the refcount of `id` against this container's heap+tracker.
+    ///
+    /// Most call sites go through [`Value::drop_with_heap`] rather than calling this
+    /// directly. Containers that already hold a live [`HeapReader`] (notably `VM`)
+    /// should override this to forward to that reader directly instead of creating
+    /// a nested [`HeapReader::with`] scope.
     #[inline]
-    fn heap_mut(&mut self) -> &mut Self {
-        self
+    fn dec_ref(&mut self, id: HeapId) {
+        let (heap, tracker) = self.heap_and_tracker();
+        heap.dec_ref(tracker, id);
     }
 }
 
@@ -238,7 +259,7 @@ impl<'a, H: ContainsHeap, V: DropWithHeap> HeapGuard<'a, H, V> {
 impl<H: ContainsHeap, V: DropWithHeap> Drop for HeapGuard<'_, H, V> {
     fn drop(&mut self) {
         // SAFETY: [DH] - value is never manually dropped until this point
-        unsafe { ManuallyDrop::take(&mut self.value) }.drop_with_heap(self.heap.heap_mut());
+        unsafe { ManuallyDrop::take(&mut self.value) }.drop_with_heap(self.heap);
     }
 }
 

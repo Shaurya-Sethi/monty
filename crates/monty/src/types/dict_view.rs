@@ -8,7 +8,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunError, RunResult},
-    heap::{Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, HeapReadOutput},
+    heap::{HeapData, HeapGuard, HeapId, HeapItem, HeapRead, HeapReadOutput, HeapReader},
     intern::StaticStrings,
     resource::ResourceTracker,
     types::{Dict, FrozenSet, MontyIter, PyTrait, Set, Type, allocate_tuple},
@@ -26,7 +26,7 @@ pub(crate) trait DictView {
     fn dict_id(&self) -> HeapId;
 
     /// Returns the live dictionary backing this view.
-    fn dict<'a>(&self, heap: &'a Heap<impl ResourceTracker>) -> &'a Dict {
+    fn dict<'a>(&self, heap: &'a HeapReader<'_, impl ResourceTracker>) -> &'a Dict {
         let HeapData::Dict(dict) = heap.get(self.dict_id()) else {
             panic!("dict view must always reference a dict");
         };

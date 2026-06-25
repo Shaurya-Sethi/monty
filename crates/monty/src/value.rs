@@ -19,7 +19,7 @@ use crate::{
     bytecode::{CallResult, VM},
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     hash::{HashValue, hash_python_str},
-    heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapReadOutput},
+    heap::{ContainsHeap, DropWithHeap, HeapData, HeapGuard, HeapId, HeapReadOutput, HeapReader},
     intern::{BytesId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
     modules::ModuleFunctions,
     resource::{
@@ -1402,7 +1402,7 @@ impl Value {
     /// errors) but don't have a `&VM` handy — notably the macro-generated
     /// `from_args` bodies, which are passed `heap` + `interns` rather than a VM.
     #[must_use]
-    pub(crate) fn py_type_heap(&self, heap: &Heap<impl ResourceTracker>) -> Type {
+    pub(crate) fn py_type_heap(&self, heap: &HeapReader<'_, impl ResourceTracker>) -> Type {
         match self {
             Self::Ref(id) => heap.get(*id).py_type(),
             _ => self.py_type_shallow(),
@@ -1963,7 +1963,7 @@ impl Value {
     #[inline]
     pub fn drop_with_heap(self, heap: &mut impl ContainsHeap) {
         if let Self::Ref(id) = self {
-            heap.heap_mut().dec_ref(id);
+            heap.dec_ref(id);
         }
     }
     /// With `memory-model-checks` enabled, `Ref` variants are replaced with `Dereferenced` and
@@ -1973,7 +1973,7 @@ impl Value {
     pub fn drop_with_heap(mut self, heap: &mut impl ContainsHeap) {
         let old = mem::replace(&mut self, Self::Dereferenced);
         if let Self::Ref(id) = &old {
-            heap.heap_mut().dec_ref(*id);
+            heap.dec_ref(*id);
             mem::forget(old);
         }
     }
@@ -2031,7 +2031,7 @@ impl Value {
     ///
     /// Returns `Some(KeywordStr)` for `InternString` values or heap `str`
     /// objects, otherwise returns `None`.
-    pub fn as_either_str(&self, heap: &Heap<impl ResourceTracker>) -> Option<EitherStr> {
+    pub fn as_either_str(&self, heap: &HeapReader<'_, impl ResourceTracker>) -> Option<EitherStr> {
         match self {
             Self::InternString(id) => Some(EitherStr::Interned(*id)),
             Self::Ref(heap_id) => match heap.get(*heap_id) {
@@ -2043,7 +2043,7 @@ impl Value {
     }
 
     /// check if the value is a string.
-    pub fn is_str(&self, heap: &Heap<impl ResourceTracker>) -> bool {
+    pub fn is_str(&self, heap: &HeapReader<'_, impl ResourceTracker>) -> bool {
         match self {
             Self::InternString(_) => true,
             Self::Ref(heap_id) => matches!(heap.get(*heap_id), HeapData::Str(_)),
@@ -2435,7 +2435,7 @@ fn longint_to_repeat_count(li: &LongInt) -> RunResult<usize> {
 ///
 /// Returns `Some(BigInt)` for Int, Bool, and LongInt values.
 /// Returns `None` for other types (Float, Str, etc.).
-fn extract_bigint(value: &Value, heap: &Heap<impl ResourceTracker>) -> Option<BigInt> {
+fn extract_bigint(value: &Value, heap: &HeapReader<'_, impl ResourceTracker>) -> Option<BigInt> {
     match value {
         Value::Int(i) => Some(BigInt::from(*i)),
         Value::Bool(b) => Some(BigInt::from(i64::from(*b))),
@@ -2488,7 +2488,7 @@ fn cloned_items_view_candidate(item: &Value, heap: &impl ContainsHeap) -> Option
 fn str_contains(
     container_str: &str,
     item: &Value,
-    heap: &Heap<impl ResourceTracker>,
+    heap: &HeapReader<'_, impl ResourceTracker>,
     interns: &Interns,
 ) -> RunResult<bool> {
     match item {
@@ -2553,16 +2553,21 @@ mod tests {
     use num_bigint::BigInt;
 
     use super::*;
-    use crate::{PrintWriter, heap::HeapReader, intern::InternerBuilder, resource::NoLimitTracker};
+    use crate::{
+        PrintWriter,
+        heap::{Heap, HeapReader},
+        intern::InternerBuilder,
+        resource::NoLimitTracker,
+    };
 
     /// Creates a heap and directly allocates a LongInt with the given BigInt value.
     ///
     /// This bypasses `LongInt::into_value()` which would demote i64-fitting values.
     /// Used to test defensive code paths that handle LongInt-as-index scenarios.
-    fn create_heap_with_longint(value: BigInt) -> (Heap<NoLimitTracker>, HeapId) {
-        let heap = Heap::new(16, NoLimitTracker);
+    fn create_heap_with_longint(value: BigInt) -> (Heap, HeapId) {
+        let heap = Heap::new(16);
         let long_int = LongInt::new(value);
-        let heap_id = heap.allocate(HeapData::LongInt(long_int)).unwrap();
+        let heap_id = heap.allocate(&NoLimitTracker, HeapData::LongInt(long_int)).unwrap();
         (heap, heap_id)
     }
 
@@ -2583,12 +2588,12 @@ mod tests {
         let value = Value::Ref(heap_id);
 
         let mut interns = create_test_interns();
-        let result = HeapReader::with(&mut heap, &mut interns, |reader, interns| {
+        let result = HeapReader::with(&mut heap, &NoLimitTracker, &mut interns, |reader, interns| {
             let vm = VM::new(Vec::new(), reader, interns, PrintWriter::Disabled);
             value.as_index(&vm, Type::List)
         });
         assert_eq!(result.unwrap(), 42);
-        value.drop_with_heap(&mut heap);
+        HeapReader::with(&mut heap, &NoLimitTracker, &mut (), |r, ()| value.drop_with_heap(r));
     }
 
     /// Tests that `as_index()` correctly handles a negative LongInt that fits in i64.
@@ -2598,12 +2603,12 @@ mod tests {
         let value = Value::Ref(heap_id);
 
         let mut interns = create_test_interns();
-        let result = HeapReader::with(&mut heap, &mut interns, |reader, interns| {
+        let result = HeapReader::with(&mut heap, &NoLimitTracker, &mut interns, |reader, interns| {
             let vm = VM::new(Vec::new(), reader, interns, PrintWriter::Disabled);
             value.as_index(&vm, Type::List)
         });
         assert_eq!(result.unwrap(), -100);
-        value.drop_with_heap(&mut heap);
+        HeapReader::with(&mut heap, &NoLimitTracker, &mut (), |r, ()| value.drop_with_heap(r));
     }
 
     /// Tests that `as_index()` returns IndexError for LongInt values too large for i64.
@@ -2615,12 +2620,12 @@ mod tests {
         let value = Value::Ref(heap_id);
 
         let mut interns = create_test_interns();
-        let result = HeapReader::with(&mut heap, &mut interns, |reader, interns| {
+        let result = HeapReader::with(&mut heap, &NoLimitTracker, &mut interns, |reader, interns| {
             let vm = VM::new(Vec::new(), reader, interns, PrintWriter::Disabled);
             value.as_index(&vm, Type::List)
         });
         assert!(result.is_err());
-        value.drop_with_heap(&mut heap);
+        HeapReader::with(&mut heap, &NoLimitTracker, &mut (), |r, ()| value.drop_with_heap(r));
     }
 
     /// Tests that `as_int()` correctly handles a LongInt containing an i64-fitting value.
@@ -2632,12 +2637,12 @@ mod tests {
         let value = Value::Ref(heap_id);
 
         let mut interns = create_test_interns();
-        let result = HeapReader::with(&mut heap, &mut interns, |reader, interns| {
+        let result = HeapReader::with(&mut heap, &NoLimitTracker, &mut interns, |reader, interns| {
             let vm = VM::new(Vec::new(), reader, interns, PrintWriter::Disabled);
             value.as_int(&vm)
         });
         assert_eq!(result.unwrap(), 12345);
-        value.drop_with_heap(&mut heap);
+        HeapReader::with(&mut heap, &NoLimitTracker, &mut (), |r, ()| value.drop_with_heap(r));
     }
 
     /// Tests that `as_int()` returns an error for LongInt values too large for i64.
@@ -2648,12 +2653,12 @@ mod tests {
         let value = Value::Ref(heap_id);
 
         let mut interns = create_test_interns();
-        let result = HeapReader::with(&mut heap, &mut interns, |reader, interns| {
+        let result = HeapReader::with(&mut heap, &NoLimitTracker, &mut interns, |reader, interns| {
             let vm = VM::new(Vec::new(), reader, interns, PrintWriter::Disabled);
             value.as_int(&vm)
         });
         assert!(result.is_err());
-        value.drop_with_heap(&mut heap);
+        HeapReader::with(&mut heap, &NoLimitTracker, &mut (), |r, ()| value.drop_with_heap(r));
     }
 
     /// Tests boundary values: i64::MAX as a LongInt.
@@ -2663,12 +2668,12 @@ mod tests {
         let value = Value::Ref(heap_id);
 
         let mut interns = create_test_interns();
-        let result = HeapReader::with(&mut heap, &mut interns, |reader, interns| {
+        let result = HeapReader::with(&mut heap, &NoLimitTracker, &mut interns, |reader, interns| {
             let vm = VM::new(Vec::new(), reader, interns, PrintWriter::Disabled);
             value.as_index(&vm, Type::List)
         });
         assert_eq!(result.unwrap(), i64::MAX);
-        value.drop_with_heap(&mut heap);
+        HeapReader::with(&mut heap, &NoLimitTracker, &mut (), |r, ()| value.drop_with_heap(r));
     }
 
     /// Tests boundary values: i64::MIN as a LongInt.
@@ -2678,12 +2683,12 @@ mod tests {
         let value = Value::Ref(heap_id);
 
         let mut interns = create_test_interns();
-        let result = HeapReader::with(&mut heap, &mut interns, |reader, interns| {
+        let result = HeapReader::with(&mut heap, &NoLimitTracker, &mut interns, |reader, interns| {
             let vm = VM::new(Vec::new(), reader, interns, PrintWriter::Disabled);
             value.as_index(&vm, Type::List)
         });
         assert_eq!(result.unwrap(), i64::MIN);
-        value.drop_with_heap(&mut heap);
+        HeapReader::with(&mut heap, &NoLimitTracker, &mut (), |r, ()| value.drop_with_heap(r));
     }
 
     /// Tests boundary values: i64::MAX + 1 as a LongInt (should fail).
@@ -2694,12 +2699,12 @@ mod tests {
         let value = Value::Ref(heap_id);
 
         let mut interns = create_test_interns();
-        let result = HeapReader::with(&mut heap, &mut interns, |reader, interns| {
+        let result = HeapReader::with(&mut heap, &NoLimitTracker, &mut interns, |reader, interns| {
             let vm = VM::new(Vec::new(), reader, interns, PrintWriter::Disabled);
             value.as_index(&vm, Type::List)
         });
         assert!(result.is_err());
-        value.drop_with_heap(&mut heap);
+        HeapReader::with(&mut heap, &NoLimitTracker, &mut (), |r, ()| value.drop_with_heap(r));
     }
 
     /// Tests boundary values: i64::MIN - 1 as a LongInt (should fail).
@@ -2710,11 +2715,11 @@ mod tests {
         let value = Value::Ref(heap_id);
 
         let mut interns = create_test_interns();
-        let result = HeapReader::with(&mut heap, &mut interns, |reader, interns| {
+        let result = HeapReader::with(&mut heap, &NoLimitTracker, &mut interns, |reader, interns| {
             let vm = VM::new(Vec::new(), reader, interns, PrintWriter::Disabled);
             value.as_index(&vm, Type::List)
         });
         assert!(result.is_err());
-        value.drop_with_heap(&mut heap);
+        HeapReader::with(&mut heap, &NoLimitTracker, &mut (), |r, ()| value.drop_with_heap(r));
     }
 }

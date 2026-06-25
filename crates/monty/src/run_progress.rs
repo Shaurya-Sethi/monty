@@ -175,7 +175,7 @@ impl<T: ResourceTracker> FunctionCall<T> {
     /// This allows modifying resource limits between execution phases,
     /// e.g. setting a time limit before resuming after an external function call.
     pub fn tracker_mut(&mut self) -> &mut T {
-        self.snapshot.heap.tracker_mut()
+        &mut self.snapshot.tracker
     }
 
     /// Resumes execution with the return value or exception from the external function.
@@ -274,7 +274,7 @@ impl<T: ResourceTracker> OsCall<T> {
     /// memory/allocation accounting between OS-call resumes (e.g. that a
     /// `read()` correctly counts the file buffer against `max_memory`).
     pub fn tracker(&self) -> &T {
-        self.snapshot.heap.tracker()
+        &self.snapshot.tracker
     }
 }
 
@@ -332,6 +332,7 @@ impl<T: ResourceTracker> NameLookup<T> {
 
         let Snapshot {
             mut heap,
+            tracker,
             executor,
             vm_state: snapshot_vm_state,
         } = self.snapshot;
@@ -339,8 +340,11 @@ impl<T: ResourceTracker> NameLookup<T> {
         let is_global = self.is_global;
         let name = self.name;
 
-        let (converted, vm_state) =
-            HeapReader::with(&mut heap, &mut (&executor, print), |reader, (executor, print)| {
+        let (converted, vm_state) = HeapReader::with(
+            &mut heap,
+            &tracker,
+            &mut (&executor, print),
+            |reader, (executor, print)| {
                 // Restore the VM first, then convert inside its lifetime
                 let mut vm = VM::restore(
                     snapshot_vm_state,
@@ -382,8 +386,9 @@ impl<T: ResourceTracker> NameLookup<T> {
                 let converted = convert_frame_exit(vm_result, &mut vm);
                 let vm_state = check_snapshot_from_converted(&converted, vm);
                 Ok((converted, vm_state))
-            })?;
-        build_run_progress(converted, vm_state, executor, heap)
+            },
+        )?;
+        build_run_progress(converted, vm_state, executor, heap, tracker)
     }
 }
 
@@ -406,18 +411,21 @@ pub struct ResolveFutures<T: ResourceTracker> {
     /// The VM state containing stack, frames, globals, and exception state.
     vm_state: VMSnapshot,
     /// The heap containing all allocated objects.
-    heap: Heap<T>,
+    heap: Heap,
+    /// Resource tracker (sibling of `heap` — see `Snapshot` for rationale).
+    tracker: T,
     /// The pending call_ids that this snapshot is waiting on.
     pending_call_ids: Vec<u32>,
 }
 
 impl<T: ResourceTracker> ResolveFutures<T> {
     /// Creates a new `ResolveFutures` from its parts.
-    fn new(executor: Executor, vm_state: VMSnapshot, heap: Heap<T>, pending_call_ids: Vec<u32>) -> Self {
+    fn new(executor: Executor, vm_state: VMSnapshot, heap: Heap, tracker: T, pending_call_ids: Vec<u32>) -> Self {
         Self {
             executor,
             vm_state,
             heap,
+            tracker,
             pending_call_ids,
         }
     }
@@ -442,10 +450,11 @@ impl<T: ResourceTracker> ResolveFutures<T> {
             executor,
             vm_state,
             mut heap,
+            tracker,
             pending_call_ids,
         } = self;
 
-        let vm_state = HeapReader::with(&mut heap, &mut &executor, |reader, executor| {
+        let vm_state = HeapReader::with(&mut heap, &tracker, &mut &executor, |reader, executor| {
             let mut vm = VM::restore(
                 vm_state,
                 &executor.module_code,
@@ -457,7 +466,7 @@ impl<T: ResourceTracker> ResolveFutures<T> {
             vm.snapshot()
         });
 
-        Self::new(executor, vm_state, heap, pending_call_ids)
+        Self::new(executor, vm_state, heap, tracker, pending_call_ids)
     }
 
     /// Resumes execution with results for some or all pending futures.
@@ -484,6 +493,7 @@ impl<T: ResourceTracker> ResolveFutures<T> {
             executor,
             vm_state,
             mut heap,
+            tracker,
             pending_call_ids,
         } = self;
 
@@ -493,8 +503,11 @@ impl<T: ResourceTracker> ResolveFutures<T> {
             .find(|(call_id, _)| !pending_call_ids.contains(call_id))
             .map(|(call_id, _)| *call_id);
 
-        let (converted, vm_state) =
-            HeapReader::with(&mut heap, &mut (&executor, print), |reader, (executor, print)| {
+        let (converted, vm_state) = HeapReader::with(
+            &mut heap,
+            &tracker,
+            &mut (&executor, print),
+            |reader, (executor, print)| {
                 // Restore the VM from the snapshot (must happen before any error return to clean up properly).
                 let mut vm = VM::restore(
                     vm_state,
@@ -517,8 +530,9 @@ impl<T: ResourceTracker> ResolveFutures<T> {
                 let converted = convert_frame_exit(result, &mut vm);
                 let vm_state = check_snapshot_from_converted(&converted, vm);
                 Ok((converted, vm_state))
-            })?;
-        build_run_progress(converted, vm_state, executor, heap)
+            },
+        )?;
+        build_run_progress(converted, vm_state, executor, heap, tracker)
     }
 }
 
@@ -539,7 +553,11 @@ pub(crate) struct Snapshot<T: ResourceTracker> {
     /// The VM state containing stack, frames, globals, and exception state.
     pub(crate) vm_state: VMSnapshot,
     /// The heap containing all allocated objects.
-    pub(crate) heap: Heap<T>,
+    pub(crate) heap: Heap,
+    /// Resource tracker, persisted as a sibling of `heap` so that resume
+    /// can re-establish the same accounting limits without imposing a
+    /// self-referential ownership on the snapshot.
+    pub(crate) tracker: T,
 }
 
 impl<T: ResourceTracker> Snapshot<T> {
@@ -555,10 +573,14 @@ impl<T: ResourceTracker> Snapshot<T> {
             executor,
             vm_state,
             mut heap,
+            tracker,
         } = self;
 
-        let (converted, vm_state) =
-            HeapReader::with(&mut heap, &mut (&executor, print), |reader, (executor, print)| {
+        let (converted, vm_state) = HeapReader::with(
+            &mut heap,
+            &tracker,
+            &mut (&executor, print),
+            |reader, (executor, print)| {
                 let mut vm = VM::restore(
                     vm_state,
                     &executor.module_code,
@@ -586,8 +608,9 @@ impl<T: ResourceTracker> Snapshot<T> {
                 let converted = convert_frame_exit(vm_result, &mut vm);
                 let vm_state = check_snapshot_from_converted(&converted, vm);
                 (converted, vm_state)
-            });
-        build_run_progress(converted, vm_state, executor, heap)
+            },
+        );
+        build_run_progress(converted, vm_state, executor, heap, tracker)
     }
 }
 
@@ -774,7 +797,8 @@ pub(crate) fn build_run_progress<T: ResourceTracker>(
     converted: ConvertedExit,
     vm_state: Option<VMSnapshot>,
     executor: Executor,
-    heap: Heap<T>,
+    heap: Heap,
+    tracker: T,
 ) -> Result<RunProgress<T>, MontyException> {
     macro_rules! new_snapshot {
         () => {
@@ -782,6 +806,7 @@ pub(crate) fn build_run_progress<T: ResourceTracker>(
                 executor,
                 vm_state: vm_state.expect("snapshot should exist"),
                 heap,
+                tracker,
             }
         };
     }
@@ -811,6 +836,7 @@ pub(crate) fn build_run_progress<T: ResourceTracker>(
             executor,
             vm_state.expect("snapshot should exist for ResolveFutures"),
             heap,
+            tracker,
             pending_call_ids,
         ))),
         ConvertedExit::NameLookup {
