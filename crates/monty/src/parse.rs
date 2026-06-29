@@ -19,7 +19,7 @@ use crate::{
         AssignTarget, Callable, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier, ImportName, Literal,
         Node, Operator, SequenceItem, UnpackTarget,
     },
-    fstring::{ConversionFlag, FStringPart, FormatSpec, ParseFormatSpecError, ParsedFormatSpec, encode_format_spec},
+    fstring::{ConversionFlag, FStringPart, FormatSpec, ParsedFormatSpec, encode_format_spec},
     intern::{InternerBuilder, StringId},
     types::long_int::INT_MAX_STR_DIGITS,
     value::EitherStr,
@@ -76,6 +76,22 @@ impl ParsedSignature {
             .chain(self.var_args.iter().copied())
             .chain(self.kwargs.iter().map(|p| p.name))
             .chain(self.var_kwargs.iter().copied())
+    }
+
+    /// Returns an iterator over every default-value expression in the signature.
+    ///
+    /// Defaults are evaluated at *definition* time in the **enclosing** scope,
+    /// not inside the function being defined. Closure analysis relies on this:
+    /// a name referenced by a default (e.g. `def inner(b=a)`) is a capture of
+    /// the enclosing scope, so the cell-var pre-pass must scan these as well as
+    /// the body (see `collect_cell_vars_from_node`). `*args`/`**kwargs` never
+    /// carry defaults, so they are not included.
+    pub fn default_exprs(&self) -> impl Iterator<Item = &ExprLoc> + '_ {
+        self.pos_args
+            .iter()
+            .chain(self.args.iter())
+            .chain(self.kwargs.iter())
+            .filter_map(|p| p.default.as_ref())
     }
 }
 
@@ -1036,7 +1052,7 @@ impl<'a> Parser<'a> {
                 let position = self.convert_range(range);
                 let ast::Arguments { args, keywords, .. } = arguments;
                 let args_vec = args.into_vec();
-                let keywords_vec = keywords.into_vec();
+                let keywords_vec: Vec<_> = keywords.into_iter().collect();
 
                 // Detect whether we need the generalized path (PEP 448):
                 // - multiple *args unpacks, OR
@@ -1567,11 +1583,25 @@ impl<'a> Parser<'a> {
             }
             InterpolatedStringElement::Interpolation(interp) => {
                 let expr = Box::new(self.parse_expression((*interp.expression).clone())?);
-                let conversion = convert_conversion_flag(interp.conversion);
                 let format_spec = match &interp.format_spec {
-                    Some(spec) => Some(self.parse_format_spec(spec)?),
+                    Some(spec) => self.parse_format_spec(spec)?,
                     None => None,
                 };
+                let mut conversion = convert_conversion_flag(interp.conversion);
+                // An explicit empty spec (`f"{x=:}"`) collapses to `None` in
+                // `parse_format_spec`, but — unlike the bare debug form
+                // (`f"{x=}"`), which defaults to `repr` — it must format with
+                // `str`. Mark the conversion `Str` so the compiler's repr
+                // default for debug forms is suppressed; this is exact because
+                // `format(x, "")` equals `str(x)` for builtins (the same
+                // equivalence the empty-spec collapse already relies on).
+                if interp.debug_text.is_some()
+                    && matches!(conversion, ConversionFlag::None)
+                    && interp.format_spec.is_some()
+                    && format_spec.is_none()
+                {
+                    conversion = ConversionFlag::Str;
+                }
                 // Extract debug prefix for `=` specifier (e.g., f'{a=}' -> "a=")
                 let debug_prefix = interp.debug_text.as_ref().map(|dt| {
                     let expr_text = &self.code[interp.expression.range()];
@@ -1603,7 +1633,10 @@ impl<'a> Parser<'a> {
     ///    encoding (e.g. `f"{x:>1048576}"`). The concatenated literal text is
     ///    interned and emitted as a single-literal dynamic spec so the VM
     ///    re-parses it at runtime.
-    fn parse_format_spec(&mut self, spec: &ast::InterpolatedStringFormatSpec) -> Result<FormatSpec, ParseError> {
+    fn parse_format_spec(
+        &mut self,
+        spec: &ast::InterpolatedStringFormatSpec,
+    ) -> Result<Option<FormatSpec>, ParseError> {
         let has_interpolation = spec
             .elements
             .iter()
@@ -1631,7 +1664,7 @@ impl<'a> Parser<'a> {
                     }
                 }
             }
-            Ok(FormatSpec::Dynamic(parts))
+            Ok(Some(FormatSpec::Dynamic(parts)))
         } else {
             let static_spec: String = spec
                 .elements
@@ -1641,14 +1674,42 @@ impl<'a> Parser<'a> {
                     InterpolatedStringElement::Interpolation(_) => None,
                 })
                 .collect();
-            let parsed: ParsedFormatSpec = static_spec.parse().map_err(|err: ParseFormatSpecError| {
-                ParseError::syntax(err.to_string(), self.convert_range(spec.range))
-            })?;
-            if let Some(encoded) = encode_format_spec(&parsed) {
-                Ok(FormatSpec::Static(encoded))
-            } else {
-                let string_id = self.interner.intern(&static_spec);
-                Ok(FormatSpec::Dynamic(vec![FStringPart::Literal(string_id)]))
+            // An empty spec (`f"{x:}"`) is identical to no spec (`f"{x}"`) for
+            // every builtin type — `format(x, "")` is `str(x)`. Emit no spec so
+            // the value takes the plain `str()` path rather than the default
+            // formatter, which diverges for some types (e.g. a bare float would
+            // otherwise go through `g`: `f"{1234567.0:}"` must be `"1234567.0"`,
+            // not `"1.23457e+06"`; a bool must be `"True"`, not `"1"`).
+            if static_spec.is_empty() {
+                return Ok(None);
+            }
+            match static_spec.parse::<ParsedFormatSpec>() {
+                Ok(parsed) => {
+                    if let Some(encoded) = encode_format_spec(&parsed) {
+                        Ok(Some(FormatSpec::Static(encoded)))
+                    } else {
+                        // Valid but too large for the compact encoding — re-parse
+                        // the literal at runtime.
+                        let string_id = self.interner.intern(&static_spec);
+                        Ok(Some(FormatSpec::Dynamic(vec![FStringPart::Literal(string_id)])))
+                    }
+                }
+                // Two kinds of failing spec are deferred to the dynamic
+                // (runtime) path rather than rejected here:
+                //  - one containing `%`, which may be a `strftime` string for a
+                //    date/datetime value (only resolvable once the type is known);
+                //  - one whose error CPython raises as a *runtime* `ValueError`
+                //    with type-dependent or format-time wording (`Unknown format
+                //    code`, grouping conflicts, missing precision) — see
+                //    [`ParseFormatSpecError::defer_to_runtime`]. The VM re-parses
+                //    the literal and raises the matching error.
+                // Genuinely-malformed specs and `usize` overflow still fail at
+                // compile time.
+                Err(err) if static_spec.contains('%') || err.defer_to_runtime() => {
+                    let string_id = self.interner.intern(&static_spec);
+                    Ok(Some(FormatSpec::Dynamic(vec![FStringPart::Literal(string_id)])))
+                }
+                Err(err) => Err(ParseError::syntax(err.to_string(), self.convert_range(spec.range))),
             }
         }
     }

@@ -7,20 +7,20 @@ use std::{
     borrow::Cow,
     cmp::Ordering,
     collections::hash_map::DefaultHasher,
-    fmt::Write,
+    fmt::{self, Write},
     hash::{Hash, Hasher},
     mem,
 };
 
 use ahash::AHashSet;
-use chrono::{Datelike, NaiveDate};
+use chrono::{Datelike, NaiveDate, format::StrftimeItems};
 
 use crate::{
     args::{ArgValues, FromArgs},
     bytecode::{CallResult, VM},
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     hash::HashValue,
-    heap::{HeapData, HeapId, HeapItem, HeapRead, HeapReader},
+    heap::{HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput, HeapReader},
     intern::{Interns, StaticStrings},
     os::OsFunctionCall,
     resource::{ResourceError, ResourceTracker},
@@ -213,8 +213,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
         None
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
-        Ok(*self.get(vm.heap) == *other.get(vm.heap))
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+        let Some(HeapReadOutput::Date(other)) = other.read_heap(vm) else {
+            return Ok(None);
+        };
+        Ok(Some(*self.get(vm.heap) == *other.get(vm.heap)))
     }
 
     fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {
@@ -266,7 +269,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Date> {
             }
             Some(id) if id == StaticStrings::Strftime => {
                 let StrftimeArgs { format } = StrftimeArgs::from_args(args, vm)?;
-                let formatted = date.0.format(&format).to_string();
+                let formatted = format_date_strftime(date, &format)?;
                 Ok(CallResult::Value(allocate_string(formatted, vm.heap)?))
             }
             Some(id) if id == StaticStrings::Replace => {
@@ -363,6 +366,41 @@ pub(crate) fn py_sub_timedelta(
         Ok(value) => Ok(Some(Value::Ref(heap.allocate(HeapData::Date(value))?))),
         Err(_) => Ok(None),
     }
+}
+
+/// Formats a [`Date`] with a `strftime` directive string, shared by the
+/// `date.strftime()` method and f-string formatting (`f"{d:%Y-%m-%d}"`).
+///
+/// Uses `chrono`'s **lenient** parser so an unrecognised directive is emitted
+/// verbatim (`%Q` → `"%Q"`), matching glibc/Linux CPython — see
+/// [`invalid_strftime_error`] for why that platform is the target. The
+/// `ValueError` path remains for the rare directive that parses but can't be
+/// rendered (so [`render_strftime`] never has to panic).
+pub(crate) fn format_date_strftime(date: Date, format: &str) -> RunResult<String> {
+    render_strftime(date.0.format_with_items(StrftimeItems::new_lenient(format))).ok_or_else(invalid_strftime_error)
+}
+
+/// Renders a `chrono` strftime result without the panic that `.to_string()`
+/// triggers on an invalid directive.
+///
+/// `chrono`'s `DelayedFormat` `Display` impl returns `fmt::Error` for an
+/// unsupported/invalid directive, and `ToString::to_string` turns that into a
+/// panic — unacceptable for untrusted sandbox input. Writing into our own
+/// buffer surfaces the failure as `None` so the caller can raise instead.
+pub(crate) fn render_strftime(formatted: impl fmt::Display) -> Option<String> {
+    let mut out = String::new();
+    write!(out, "{formatted}").ok().map(|()| out)
+}
+
+/// The `ValueError` raised when a `strftime` directive parses but can't be
+/// rendered for this value (e.g. a time directive on a bare `date`).
+///
+/// Unrecognised directives no longer reach this path — the lenient parser
+/// emits them verbatim to match glibc/Linux CPython (`strftime('%Q') == '%Q'`),
+/// rather than CPython's macOS behaviour (`'Q'`) which we deliberately don't
+/// follow; see `limitations/datetime.md`.
+pub(crate) fn invalid_strftime_error() -> RunError {
+    SimpleException::new_msg(ExcType::ValueError, "Invalid format string".to_owned()).into()
 }
 
 /// Argument shape for `date.strftime(format)` and `datetime.strftime(format)`.

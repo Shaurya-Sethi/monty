@@ -9,6 +9,12 @@ inside the sandbox).
 
 - Allocation tracking is global; the host sets the bytes budget when
   constructing the VM.
+- The byte count is **approximate**: per-object sizing uses `py_estimate_size`,
+  which elides bookkeeping overhead (HashMap bucket padding, `Vec` capacity
+  slack, `SmallVec` inline buffers, scheduler queue allocations) and rounds
+  per-spawn task overhead to a fixed conservative constant. The configured
+  `max_memory` is a budget on user-visible data, not a hard ceiling on
+  process RSS.
 - Operations whose result is bounded by simple arithmetic on input sizes
   are **pre-checked** before allocating: integer multiplication, left
   shift, integer power, sequence repeat (`'x' * n`), padding (`str.ljust`,
@@ -40,8 +46,16 @@ inside the sandbox).
 
 ## Time
 
-- The host can set a wall-clock budget; if exceeded the VM stops on the
-  next bytecode boundary with `ResourceError`.
+- The host can set a `max_duration` budget; if exceeded the VM stops on
+  the next bytecode boundary with `ResourceError`.
+- The budget covers cumulative **execution time**, not wall-clock time:
+  the clock runs only while the interpreter executes bytecode, and is
+  paused while execution is suspended waiting on the host (external
+  function calls, OS callbacks) and between REPL feeds. It accumulates
+  across feeds for the life of the session.
+- The accumulated time is serialized into dumps/snapshots, so a restored
+  session resumes its budget where it left off rather than restarting
+  from zero.
 - There is no in-sandbox way to observe the budget or remaining time.
 
 ## JSON

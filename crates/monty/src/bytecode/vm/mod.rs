@@ -12,11 +12,13 @@ mod compare;
 mod context_manager;
 mod exceptions;
 mod format;
+mod recursion;
 mod scheduler;
 
 use std::{cmp::Ordering, mem};
 
 pub(crate) use call::CallResult;
+pub(crate) use recursion::{ContainsVM, DropWithVM, RecursionToken, VmGuard};
 use scheduler::Scheduler;
 
 use crate::{
@@ -31,7 +33,7 @@ use crate::{
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapReadOutput, HeapReader},
     heap_data::{Closure, FunctionDefaults},
-    intern::{FunctionId, Interns, StringId},
+    intern::{FunctionId, Interns, StaticStrings, StringId},
     io::PrintWriter,
     modules::{StandardLib, json::JsonStringCache},
     object::InvalidInputError,
@@ -39,7 +41,7 @@ use crate::{
     parse::CodeRange,
     resource::ResourceTracker,
     types::{
-        LongInt, MontyIter, PyTrait,
+        Dict, LongInt, MontyIter, PyTrait,
         file::{PendingFileEffect, apply_buffer_store, apply_write_position},
         timedelta,
     },
@@ -692,6 +694,14 @@ pub struct VM<'h, T: ResourceTracker> {
     /// single `Option` is sufficient even with async tasks (which interleave
     /// between OS calls, not within one).
     pub(crate) pending_file_effect: Option<PendingFileEffect>,
+
+    /// Current recursion depth — charged by function-call frames and by nested
+    /// data-structure traversals (`repr`/`eq`/`cmp`/`hash`, json, ...).
+    ///
+    /// See [`recursion`](self::recursion) for the guard/token primitives that
+    /// maintain it. Not serialized: it is reconstructed from the active frame
+    /// count on `restore` and rebalanced per-task across async switches.
+    recursion_depth: usize,
 }
 
 impl<'h, T: ResourceTracker> VM<'h, T> {
@@ -716,6 +726,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             module_code: None,
             json_string_cache: JsonStringCache::default(),
             pending_file_effect: None,
+            recursion_depth: 0,
         }
     }
 
@@ -761,10 +772,9 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             .collect();
 
         // Restore recursion depth to match the number of active function frames.
-        // During serialization, recursion_depth is transient (defaults to 0),
-        // but cleanup paths call decr_recursion_depth for each non-root frame.
-        let current_frame_depth = frames.len().saturating_sub(1); // Subtract 1 for root frame which doesn't contribute to depth
-        heap.set_recursion_depth(current_frame_depth);
+        // recursion_depth is not serialized; cleanup paths decrement it for each
+        // non-root frame, so it must start matching the restored frame count.
+        let current_frame_depth = frames.len().saturating_sub(1); // root frame doesn't contribute to depth
 
         Self {
             stack: snapshot.stack,
@@ -780,6 +790,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             ext_function_load_ip: None,
             json_string_cache: JsonStringCache::default(),
             pending_file_effect: snapshot.pending_file_effect,
+            recursion_depth: current_frame_depth,
         }
     }
 
@@ -820,7 +831,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         // at its exit, so they share the same address space as ordinary
         // operand values.
         self.push_frame(CallFrame::new_module(code, exc_stack_base))?;
-        self.run()
+        self.run_external()
     }
 
     /// Returns the `stack_base` of the current (topmost) call frame.
@@ -857,16 +868,37 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         self.scheduler.current_task_id().is_none_or(TaskId::is_main)
     }
 
+    /// Runs the VM from a host boundary, bracketing the loop with the
+    /// tracker's execution-clock hooks so `max_duration` measures cumulative
+    /// *execution* time only — the clock stops whenever this returns
+    /// (completion, error, or suspension at an external call).
+    ///
+    /// Every host turn must enter the loop through exactly one
+    /// `run_external` call, and it must NEVER nest: VM-internal re-entry
+    /// (task switches, `evaluate_function`) uses the raw private [`Self::run`]
+    /// instead, whose time is already inside the enclosing window.
+    pub(crate) fn run_external(&mut self) -> Result<FrameExit, RunError> {
+        self.heap.tracker().on_execution_start();
+        let result = self.run();
+        self.heap.tracker().on_execution_stop();
+        result
+    }
+
     /// Main execution loop.
     ///
     /// Fetches opcodes from the current frame's bytecode and executes them.
     /// Returns when execution completes, an error occurs, or an external
     /// call is needed.
     ///
+    /// Private: host boundaries go through [`Self::run_external`] (directly
+    /// or via `run_module`/`resume`/`resume_with_exception`/
+    /// `resume_with_resolved_futures`) so the execution clock is accounted;
+    /// only VM-internal re-entry calls this raw loop.
+    ///
     /// Uses locally cached `code` and `ip` variables to avoid repeated
     /// `frames.last_mut().expect()` calls during operand fetching. The cache
     /// is reloaded after any operation that modifies the frame stack.
-    pub fn run(&mut self) -> Result<FrameExit, RunError> {
+    fn run(&mut self) -> Result<FrameExit, RunError> {
         // Cache frame state locally to avoid repeated frames.last_mut() calls.
         // The Code reference has lifetime 'h (lives in Interns), independent of frame borrow.
         let mut cached_frame: CachedFrame<'h> = self.new_cached_frame();
@@ -998,7 +1030,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 Opcode::LoadGlobalCallable => {
                     let (slot, name_idx) = cached_frame.fetch_u16_u16();
                     let name_id = StringId::from_index(name_idx);
-                    self.load_global_callable(slot, name_id);
+                    try_catch_sync!(self, cached_frame, self.load_global_callable(slot, name_id));
                 }
                 Opcode::StoreGlobal => {
                     let slot = cached_frame.fetch_u16();
@@ -1342,7 +1374,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                         return Err(RunError::internal("ForIter: expected iterator ref on stack"));
                     };
                     let HeapReadOutput::Iter(mut iter) = self.heap.read(heap_id) else {
-                        panic!("ForIter: expected iterator ref on stack");
+                        return Err(RunError::internal("ForIter: expected iterator ref on stack"));
                     };
 
                     match iter.advance(self) {
@@ -1724,13 +1756,13 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             match result {
                 Ok(value) => {
                     self.push(value);
-                    self.run()
+                    self.run_external()
                 }
                 Err(err) => self.resume_with_exception(err),
             }
         } else {
             self.push(value);
-            self.run()
+            self.run_external()
         }
     }
 
@@ -1780,7 +1812,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
             return Err(uncaught_error);
         }
         // Exception was caught, continue execution
-        self.run()
+        self.run_external()
     }
 
     // ========================================================================
@@ -1839,7 +1871,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     pub(super) fn push_frame(&mut self, frame: CallFrame<'h>) -> RunResult<()> {
         // root frame doesn't count towards recursion depth, so only check if there's already a frame on the stack
         if !self.frames.is_empty()
-            && let Err(e) = self.heap.incr_recursion_depth()
+            && let Err(e) = self.incr_recursion()
         {
             self.cleanup_frame_state(&frame);
             return Err(e.into());
@@ -1866,7 +1898,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         }
         // Decrement recursion depth if this wasn't the root frame
         if !self.frames.is_empty() {
-            self.heap.decr_recursion_depth();
+            self.decr_recursion();
         }
         frame.should_return
     }
@@ -1968,13 +2000,20 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     /// (see [`builtin_for_name`]) so `f()` style calls into a builtin still work when
     /// the name happens to have a module slot allocated (e.g. because the module also
     /// `def`-binds the same name elsewhere) but that slot is currently `Undefined`.
-    fn load_global_callable(&mut self, slot: u16, name_id: StringId) {
+    fn load_global_callable(&mut self, slot: u16, name_id: StringId) -> RunResult<()> {
         let value = self.globals[slot as usize].clone_with_heap(self);
 
         if matches!(value, Value::Undefined) {
             if let Some(builtin) = self.builtin_for_name(name_id) {
                 self.push(Value::Builtin(builtin));
-                return;
+                return Ok(());
+            }
+            // A reserved module dunder (e.g. `__name__`) in call position resolves
+            // to its fixed value; the subsequent call then fails with the usual
+            // "object is not callable" error, matching CPython.
+            if let Some(value) = self.module_dunder(name_id)? {
+                self.push(value);
+                return Ok(());
             }
             // Save the load instruction's IP so NameError tracebacks point to the name
             self.ext_function_load_ip = Some(self.instruction_ip);
@@ -1982,6 +2021,7 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
         } else {
             self.push(value);
         }
+        Ok(())
     }
 
     /// Creates an UnboundLocalError for a local variable accessed before assignment.
@@ -2014,6 +2054,29 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     fn builtin_for_name(&self, name_id: StringId) -> Option<Builtins> {
         let name = self.interns.get_str(name_id);
         name.parse::<Builtins>().ok()
+    }
+
+    /// Returns the fixed value for a module-level dunder, or `None` if `name_id`
+    /// does not name one of [`RESERVED_MODULE_DUNDERS`](crate::bytecode::RESERVED_MODULE_DUNDERS).
+    ///
+    /// Backs the read side of those dunders: `__name__` is always `'__main__'`
+    /// (Monty only ever runs a top-level module) and `__debug__` is `True`
+    /// (asserts always run). `__doc__`/`__spec__`/`__package__` default to
+    /// `None` and `__annotations__` to a fresh empty dict — module-level
+    /// annotations are not stored (see `limitations/typing.md`), so it is
+    /// always empty. `__loader__` is deliberately *not* exposed: CPython only
+    /// ever puts a loader object there (never `None`), so rather than diverge
+    /// on the type we let it raise `NameError` like other unexposed dunders
+    /// (`__file__`, `__cached__`, …).
+    fn module_dunder(&self, name_id: StringId) -> RunResult<Option<Value>> {
+        let value = match self.interns.get_str(name_id) {
+            "__name__" => Value::InternString(StaticStrings::DunderMain.into()),
+            "__debug__" => Value::Bool(true),
+            "__annotations__" => Value::Ref(self.heap.allocate(HeapData::Dict(Dict::new()))?),
+            "__doc__" | "__spec__" | "__package__" => Value::None,
+            _ => return Ok(None),
+        };
+        Ok(Some(value))
     }
 
     /// Creates a NameError for an undefined global variable.
@@ -2060,6 +2123,10 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
                 self.push(Value::Builtin(builtin));
                 return Ok(None);
             }
+            if let Some(value) = self.module_dunder(name_id)? {
+                self.push(value);
+                return Ok(None);
+            }
             Ok(Some(FrameExit::NameLookup {
                 name_id,
                 namespace_slot: slot,
@@ -2072,6 +2139,10 @@ impl<'h, T: ResourceTracker> VM<'h, T> {
     }
 
     /// Pops the top of stack and stores it in a global variable.
+    ///
+    /// Reassigning a reserved module dunder (see [`RESERVED_MODULE_DUNDERS`]) is
+    /// rejected at compile time (see `Compiler::compile_store`), so no name
+    /// check is needed here.
     fn store_global(&mut self, slot: u16) {
         let value = self.pop();
         let old_value = mem::replace(&mut self.globals[slot as usize], value);

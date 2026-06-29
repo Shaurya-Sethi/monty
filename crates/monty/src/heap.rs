@@ -249,19 +249,15 @@ impl<'a, T: ResourceTracker> HeapReader<'a, T> {
         self.tracker.check_time()
     }
 
-    /// Increments the recursion depth and checks the limit via the `ResourceTracker`.
+    /// Mirror of [`track_growth`](Self::track_growth) for in-place shrinks.
     ///
-    /// Returns `Ok(RecursionToken)` if within limits. The caller must ensure
-    /// the token is released on all code paths — typically via `defer_drop!`
-    /// or `HeapGuard`, which call [`DropWithHeap::drop_with_heap`] on the token.
-    ///
-    /// Returns `Err(ResourceError::Recursion)` if the limit would be exceeded.
+    /// Needed when a heap entry's `py_estimate_size` decreases without the
+    /// entry itself being freed: `on_free` at entry release reads the
+    /// *current* size, so growth charged earlier would otherwise leak in
+    /// the tracker counter.
     #[inline]
-    pub fn incr_recursion_depth(&self) -> Result<RecursionToken, ResourceError> {
-        let depth = self.heap.recursion_depth.get();
-        self.tracker.check_recursion_depth(depth)?;
-        self.heap.recursion_depth.set(depth + 1);
-        Ok(RecursionToken(()))
+    pub fn track_shrink(&self, bytes: usize) {
+        self.tracker.on_free(|| bytes);
     }
 
     /// Returns whether cycle collection should run, consulting the tracker's interval.
@@ -877,25 +873,6 @@ impl<'de> serde::Deserialize<'de> for UnsafeHeapData {
     }
 }
 
-/// Zero-size token returned by [`Heap::incr_recursion_depth`].
-///
-/// Represents one level of recursion depth that must be released when the
-/// recursive operation completes. Released via [`DropWithHeap`] — compatible
-/// with [`defer_drop!`] and [`HeapGuard`] for automatic cleanup on all code paths.
-#[derive(Debug)]
-pub(crate) struct RecursionToken(());
-
-impl DropWithHeap for RecursionToken {
-    #[inline]
-    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
-        heap.heap().decr_recursion_depth();
-        // Future-proofing: when recursion depth moves off `Heap` in a later
-        // step, this will move to `heap.heap_and_tracker().0` or a dedicated
-        // accessor; for now `decr_recursion_depth` is still on `Heap`.
-        let _ = self;
-    }
-}
-
 /// Reference-counted arena that backs all heap-only runtime values.
 ///
 /// Uses a free list to reuse slots from freed values, keeping memory usage
@@ -956,13 +933,6 @@ pub(crate) struct Heap {
     #[cfg(feature = "test-hooks")]
     #[serde(skip, default)]
     gc_disabled: bool,
-    /// Current recursion depth — incremented on function calls and data structure traversals.
-    ///
-    /// Uses `Cell` for interior mutability so that methods with only `&Heap`
-    /// (like `py_repr_fmt`) can still increment/decrement the depth counter.
-    /// Transient state — reconstructed from the active frame stack after restore.
-    #[serde(skip, default)]
-    recursion_depth: Cell<usize>,
     /// Cached HeapId for the `datetime.timezone.utc` singleton.
     ///
     /// Lazily allocated on first access to `timezone.utc`. Once created, the refcount
@@ -1012,7 +982,6 @@ impl Heap {
             allocations_since_gc: Cell::new(0),
             #[cfg(feature = "test-hooks")]
             gc_disabled: false,
-            recursion_depth: Cell::new(0),
             timezone_utc: None,
         };
 
@@ -1032,35 +1001,6 @@ impl Heap {
         let empty_tuple = this.entries.allocate(new_entry);
         debug_assert_eq!(empty_tuple, EMPTY_TUPLE_ID);
         this
-    }
-
-    /// Decrements the recursion depth.
-    ///
-    /// Called internally by `RecursionToken` — prefer releasing the token
-    /// rather than calling this directly.
-    #[inline]
-    pub(crate) fn decr_recursion_depth(&self) {
-        let depth = self.recursion_depth.get();
-        debug_assert!(depth > 0, "decr_recursion_depth called when depth is 0");
-        self.recursion_depth.set(depth - 1);
-    }
-
-    /// Returns the current recursion depth.
-    ///
-    /// Used during async task switching to compute a task's depth contribution
-    /// before adjusting the global counter.
-    pub(crate) fn get_recursion_depth(&self) -> usize {
-        self.recursion_depth.get()
-    }
-
-    /// Sets the recursion depth to an explicit value.
-    ///
-    /// Used after deserialization to restore the recursion depth to match
-    /// the number of active (non-global) namespace frames that were serialized.
-    /// Also used during async task switching to subtract/add a task's depth
-    /// contribution when switching away from/to that task.
-    pub(crate) fn set_recursion_depth(&self, depth: usize) {
-        self.recursion_depth.set(depth);
     }
 
     /// Number of entries in the heap (including freed slots).
@@ -1708,6 +1648,15 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                 on_child(tz_id);
             }
         }
+        HeapData::OpenFile(file) => {
+            // Kept in sync with `py_dec_ref_ids_for_data`: the file owns one
+            // ref on its loaded buffer. (`OpenFile` is not GC-tracked today, so
+            // this arm is not reached by the collector, but the two walkers must
+            // mirror each other per the contract above.)
+            if let Some(buffer_id) = file.buffer_id() {
+                on_child(buffer_id);
+            }
+        }
         // Leaf types with no heap references
         _ => {}
     }
@@ -1788,6 +1737,12 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
             if let Some(tz_id) = dt.tzinfo_ref() {
                 stack.push(tz_id);
             }
+        }
+        HeapData::OpenFile(f) => {
+            // Kept in sync with `for_each_child_id`: release the file's owned
+            // ref on its loaded buffer when the file is freed (e.g. read but
+            // never `close()`d).
+            f.py_dec_ref_ids(stack);
         }
         // other types have no nested heap references
         _ => {}

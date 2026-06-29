@@ -1,69 +1,69 @@
 #!/bin/bash
+# Packs @pydantic/monty plus the host's platform binary package and installs
+# both into smoke-test/ from the tarballs, verifying the published-package
+# experience end to end (binary resolution via the platform package included).
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+WORKSPACE_DIR="$(cd "$ROOT_DIR/../.." && pwd)"
 
 cd "$ROOT_DIR"
 
 echo "=== Building package ==="
-npm run build
+npm run build:debug
 
-# Detect current platform
-NODE_FILE=$(ls monty.*.node 2>/dev/null | head -1)
-if [ -z "$NODE_FILE" ]; then
-    echo "Error: No .node file found after build"
-    exit 1
-fi
+echo "=== Building the monty binary ==="
+cargo build -p monty-cli --manifest-path "$WORKSPACE_DIR/Cargo.toml"
 
-# Extract platform from filename (e.g., monty.darwin-arm64.node -> darwin-arm64)
-PLATFORM=$(echo "$NODE_FILE" | sed 's/monty\.\(.*\)\.node/\1/')
-echo "Detected platform: $PLATFORM"
+echo "=== Creating platform package ==="
+rm -rf npm/
+npx napi create-npm-dirs
+node scripts/create-platform-packages.mjs
 
-echo "=== Setting up platform packages ==="
-npm run create-npm-dirs
+# Host triple (matches ts/binary.ts and the napi target names).
+case "$(uname -s)-$(uname -m)" in
+  Darwin-arm64) TRIPLE=darwin-arm64; EXE=monty ;;
+  Darwin-x86_64) TRIPLE=darwin-x64; EXE=monty ;;
+  Linux-aarch64) TRIPLE=linux-arm64-gnu; EXE=monty ;;
+  Linux-x86_64) TRIPLE=linux-x64-gnu; EXE=monty ;;
+  MINGW*-x86_64|MSYS*-x86_64|CYGWIN*-x86_64) TRIPLE=win32-x64-msvc; EXE=monty.exe ;;
+  *) echo "unsupported host: $(uname -s)-$(uname -m)"; exit 1 ;;
+esac
+PLATFORM_DIR=npm/$TRIPLE
+# Ship both artifacts: the napi shared library (built to the package root by
+# `npm run build`) and the monty worker binary.
+cp "monty.$TRIPLE.node" "$PLATFORM_DIR/"
+cp "$WORKSPACE_DIR/target/debug/$EXE" "$PLATFORM_DIR/"
 
-# Copy binary to platform package directory (simulates napi artifacts)
-PLATFORM_DIR="npm/$PLATFORM"
-if [ ! -d "$PLATFORM_DIR" ]; then
-    echo "Error: Platform directory $PLATFORM_DIR not found"
-    exit 1
-fi
-cp "$NODE_FILE" "$PLATFORM_DIR/"
-
-# Add optionalDependencies to main package.json (without publishing)
-npx napi prepublish -t npm --skip-optional-publish
-
-echo "=== Creating platform package tgz ==="
+echo "=== Creating tgz files ==="
 cd "$PLATFORM_DIR"
 PLATFORM_TGZ=$(npm pack 2>/dev/null)
 mv "$PLATFORM_TGZ" "$ROOT_DIR/"
 cd "$ROOT_DIR"
-echo "Created: $PLATFORM_TGZ"
-
-echo "=== Creating main package tgz ==="
 MAIN_TGZ=$(npm pack 2>/dev/null)
-echo "Created: $MAIN_TGZ"
+echo "Created: $PLATFORM_TGZ $MAIN_TGZ"
 
 echo "=== Installing in smoke-test ==="
 cd "$ROOT_DIR/smoke-test"
-rm -rf node_modules package-lock.json
+rm -rf node_modules package-lock.json dist
 
-# Install platform package first, then main package
-npm install "../$PLATFORM_TGZ" --force
-npm install "../$MAIN_TGZ" --force
+# --no-save/--no-package-lock keep the tarball paths out of the checked-in
+# package.json (they're platform- and version-specific, so committing them
+# breaks the smoke test everywhere else).
+npm install "../$PLATFORM_TGZ" --force --no-save --no-package-lock
+npm install "../$MAIN_TGZ" --force --no-save --no-package-lock
 
 echo "=== Type checking ==="
 npm run type-check
 
 echo "=== Running smoke tests ==="
-npm test
+# Unset MONTY_BIN so resolution exercises the installed platform package.
+env -u MONTY_BIN npm test
 
 echo "=== Cleaning up ==="
 cd "$ROOT_DIR"
 rm -f "$MAIN_TGZ" "$PLATFORM_TGZ"
 rm -rf npm/
-# Remove optionalDependencies added by napi prepublish (keeps other package.json changes)
-npm pkg delete optionalDependencies 2>/dev/null || true
 
 echo "=== Smoke test passed! ==="

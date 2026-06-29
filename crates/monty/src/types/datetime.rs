@@ -13,7 +13,9 @@ use std::{
 };
 
 use ahash::AHashSet;
-use chrono::{Datelike, FixedOffset, NaiveDateTime, NaiveTime, TimeDelta as ChronoTimeDelta, Timelike};
+use chrono::{
+    Datelike, FixedOffset, NaiveDateTime, NaiveTime, TimeDelta as ChronoTimeDelta, Timelike, format::StrftimeItems,
+};
 
 use crate::{
     args::{ArgValues, FromArgs},
@@ -21,7 +23,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult, SimpleException},
     hash::HashValue,
-    heap::{DropWithHeap, HeapData, HeapId, HeapItem, HeapRead, HeapReader},
+    heap::{DropWithHeap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput, HeapReader},
     intern::{Interns, StaticStrings},
     object::MontyObject,
     os::OsFunctionCall,
@@ -748,6 +750,18 @@ fn year_in_python_range(year: i32) -> bool {
     (1..=9999).contains(&year)
 }
 
+/// Formats a [`DateTime`] with a `strftime` directive string, shared by the
+/// `datetime.strftime()` method and f-string formatting (`f"{dt:%Y-%m-%d}"`).
+///
+/// Uses the naive (wall-clock) components, mirroring `chrono`'s formatting of
+/// `NaiveDateTime`, with the **lenient** parser so an unrecognised directive is
+/// passed through verbatim to match glibc/Linux CPython (see
+/// [`date::format_date_strftime`]).
+pub(crate) fn format_datetime_strftime(dt: &DateTime, format: &str) -> RunResult<String> {
+    date::render_strftime(dt.naive.format_with_items(StrftimeItems::new_lenient(format)))
+        .ok_or_else(date::invalid_strftime_error)
+}
+
 /// Formats a datetime as an ISO 8601 string with the given separator.
 ///
 /// Matches CPython's `datetime.isoformat(sep='T')`.
@@ -882,16 +896,19 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
         None
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+        let Some(HeapReadOutput::DateTime(other)) = other.read_heap(vm) else {
+            return Ok(None);
+        };
         let a = self.get(vm.heap);
         let b = other.get(vm.heap);
-        if is_aware(a) != is_aware(b) {
-            return Ok(false);
-        }
-        if is_aware(a) {
-            return Ok(utc_micros(a) == utc_micros(b));
-        }
-        Ok(local_micros(a) == local_micros(b))
+        Ok(Some(if is_aware(a) != is_aware(b) {
+            false
+        } else if is_aware(a) {
+            utc_micros(a) == utc_micros(b)
+        } else {
+            local_micros(a) == local_micros(b)
+        }))
     }
 
     fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {
@@ -982,7 +999,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, DateTime> {
             }
             Some(id) if id == StaticStrings::Strftime => {
                 let StrftimeArgs { format } = StrftimeArgs::from_args(args, vm)?;
-                let formatted = dt.naive.format(&format).to_string();
+                let formatted = format_datetime_strftime(&dt, &format)?;
                 Ok(CallResult::Value(allocate_string(formatted, vm.heap)?))
             }
             Some(id) if id == StaticStrings::Replace => {

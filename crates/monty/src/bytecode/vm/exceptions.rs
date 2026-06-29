@@ -13,17 +13,19 @@ use crate::{
 };
 
 impl<T: ResourceTracker> VM<'_, T> {
-    /// Returns the current frame's name for traceback generation.
-    ///
-    /// Returns the function name for user-defined functions, or `<module>` for
-    /// module-level code. The frame stack must be non-empty: callers in the
-    /// async path that may run with no active frame (e.g. just before a spawned
-    /// task's first frame is pushed) are expected to route errors through
-    /// `handle_task_failure` rather than the regular exception machinery.
+    /// Returns the current frame's name for traceback generation: the
+    /// function name for user-defined functions, or `<module>` for
+    /// module-level code. The empty-frames branch is defensive — async
+    /// error paths now charge their tracker growth *before* draining
+    /// `self.frames`, so any caller reaching this with an empty stack
+    /// indicates a bug elsewhere; the `<module>` fallback keeps
+    /// traceback generation total rather than panicking.
     fn current_frame_name(&self) -> StringId {
-        let frame = self.current_frame();
-        match frame.function_id {
-            Some(func_id) => self.interns.get_function(func_id).name.name_id,
+        match self.frames.last() {
+            Some(frame) => match frame.function_id {
+                Some(func_id) => self.interns.get_function(func_id).name.name_id,
+                None => StaticStrings::Module.into(),
+            },
             None => StaticStrings::Module.into(),
         }
     }

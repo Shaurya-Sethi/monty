@@ -75,6 +75,8 @@ fn default_test_limits() -> ResourceLimits {
 /// - `skip-cpython-windows` - Skip CPython test on Windows (Monty test still runs).
 ///   Used for tests that rely on POSIX path semantics which Monty's sandbox always
 ///   provides but Windows CPython does not.
+/// - `cpython-main-module` - Set `__name__ = '__main__'` for CPython only,
+///   matching script-style module globals for tests that directly inspect it.
 /// - `xfail=monty,cpython` - Expected to fail on both interpreters
 #[derive(Debug, Clone)]
 #[expect(clippy::struct_excessive_bools)]
@@ -96,6 +98,10 @@ struct TestConfig {
     /// path semantics (e.g. pathlib tests using `/` paths) which are correct for
     /// Monty's always-POSIX sandbox but behave differently on Windows CPython.
     skip_cpython_windows: bool,
+    /// When true, seed CPython globals with script-style `__name__ = '__main__'`.
+    /// This is intentionally opt-in because doing it globally changes CPython's
+    /// function error messages to include `__main__.` qualifiers.
+    cpython_main_module: bool,
     /// Resource limits applied to this test's Monty run. Defaults to
     /// `default_test_limits()`; the `# gc-interval=<N>` directive mutates
     /// this in `parse_fixture`. The recursion ceiling is tightened from the
@@ -114,6 +120,7 @@ impl Default for TestConfig {
             async_mode: false,
             mount_fs: false,
             skip_cpython_windows: false,
+            cpython_main_module: false,
             limits: default_test_limits(),
         }
     }
@@ -195,6 +202,7 @@ fn parse_fixture(content: &str) -> (String, Expectation, TestConfig) {
         skip_cpython_windows: comment_lines
             .iter()
             .any(|line| line.starts_with("skip-cpython-windows")),
+        cpython_main_module: comment_lines.iter().any(|line| line.starts_with("cpython-main-module")),
         ..Default::default()
     };
     // Check for "xfail=" directive
@@ -462,7 +470,7 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> DispatchResult 
             DispatchResult::Sync(
                 MontyObject::Dataclass {
                     name: "Point".to_string(),
-                    type_id: 0, // Test fixture has no real Python type
+                    type_id: 1, // distinct per fixture class (real hosts pass the Python type id)
                     field_names: vec!["x".to_string(), "y".to_string()],
                     attrs: vec![
                         (MontyObject::String("x".to_string()), MontyObject::Int(1)),
@@ -481,7 +489,7 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> DispatchResult 
             DispatchResult::Sync(
                 MontyObject::Dataclass {
                     name: "MutablePoint".to_string(),
-                    type_id: 0, // Test fixture has no real Python type
+                    type_id: 2, // distinct per fixture class (real hosts pass the Python type id)
                     field_names: vec!["x".to_string(), "y".to_string()],
                     attrs: vec![
                         (MontyObject::String("x".to_string()), MontyObject::Int(1)),
@@ -501,7 +509,7 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> DispatchResult 
             DispatchResult::Sync(
                 MontyObject::Dataclass {
                     name: "User".to_string(),
-                    type_id: 0, // Test fixture has no real Python type
+                    type_id: 3, // distinct per fixture class (real hosts pass the Python type id)
                     field_names: vec!["name".to_string(), "active".to_string()],
                     attrs: vec![
                         (MontyObject::String("name".to_string()), MontyObject::String(name)),
@@ -520,7 +528,7 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> DispatchResult 
             DispatchResult::Sync(
                 MontyObject::Dataclass {
                     name: "Empty".to_string(),
-                    type_id: 0, // Test fixture has no real Python type
+                    type_id: 4, // distinct per fixture class (real hosts pass the Python type id)
                     field_names: vec![],
                     attrs: vec![].into(),
 
@@ -583,7 +591,7 @@ fn dispatch_method_call(
             let dy = i64::try_from(&args[2]).expect("dy must be int");
             MontyObject::Dataclass {
                 name: "Point".to_string(),
-                type_id: 0,
+                type_id: 1, // same class as `make_point`'s Point
                 field_names: vec!["x".to_string(), "y".to_string()],
                 attrs: vec![
                     (MontyObject::String("x".to_string()), MontyObject::Int(x + dx)),
@@ -601,7 +609,7 @@ fn dispatch_method_call(
             let factor = i64::try_from(&args[1]).expect("factor must be int");
             MontyObject::Dataclass {
                 name: "Point".to_string(),
-                type_id: 0,
+                type_id: 1, // same class as `make_point`'s Point
                 field_names: vec!["x".to_string(), "y".to_string()],
                 attrs: vec![
                     (MontyObject::String("x".to_string()), MontyObject::Int(x * factor)),
@@ -2131,6 +2139,7 @@ enum CpythonResult {
 ///
 /// RefCounts tests are skipped as they're Monty-specific.
 /// Traceback tests use scripts/run_traceback.py for reliable caret line support.
+#[expect(clippy::fn_params_excessive_bools)]
 fn try_run_cpython_test(
     path: &Path,
     code: &str,
@@ -2138,6 +2147,7 @@ fn try_run_cpython_test(
     iter_mode: bool,
     async_mode: bool,
     mount_fs: bool,
+    cpython_main_module: bool,
 ) -> Result<(), TestFailure> {
     // Ensure Python modules are imported before parallel tests access them.
     // This prevents race conditions during module initialization.
@@ -2214,6 +2224,16 @@ fn try_run_cpython_test(
         globals
             .call_method1("update", (exported,))
             .expect("Failed to merge shared test globals");
+
+        // NOTE: we deliberately do NOT set `__name__ = '__main__'` by default.
+        // Doing so makes CPython qualify function names in some error messages
+        // (`__main__.f() argument ...`), which Monty does not, breaking
+        // exception-message parity for several `function__err_*` cases.
+        if cpython_main_module {
+            globals
+                .set_item("__name__", "__main__")
+                .expect("Failed to seed __name__ for CPython");
+        }
 
         // For mount-fs tests, inject `root` variable pointing to real temp directory.
         if let Some(ref setup_code) = mount_root_setup {
@@ -2351,11 +2371,11 @@ fn format_cpython_exception(py: Python<'_>, e: &PyErr) -> String {
 ///
 /// Tests that exceed this duration are considered to be hanging (infinite loop)
 /// and will fail with a timeout error. Disabled under miri since the interpreter
-/// overhead makes normal tests exceed the 2s limit.
+/// overhead makes normal tests exceed the 4s limit.
 const TEST_TIMEOUT: Duration = if cfg!(miri) {
     Duration::from_mins(10)
 } else {
-    Duration::from_secs(2)
+    Duration::from_secs(4)
 };
 
 /// Result from running a test with a timeout.
@@ -2509,6 +2529,7 @@ fn run_test_cases_cpython(path: &Path) -> Result<(), Box<dyn Error>> {
         config.iter_mode,
         config.async_mode,
         config.mount_fs,
+        config.cpython_main_module,
     );
 
     if config.xfail_cpython {

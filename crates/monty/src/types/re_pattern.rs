@@ -21,7 +21,7 @@ use crate::{
     bytecode::{CallResult, VM},
     defer_drop,
     exception_private::{ExcType, RunResult},
-    heap::{HeapData, HeapId, HeapItem, HeapRead, HeapReader},
+    heap::{HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput, HeapReader},
     intern::StaticStrings,
     modules::re::{ASCII, DOTALL, IGNORECASE, MULTILINE},
     resource::{ResourceTracker, check_estimated_size},
@@ -280,8 +280,11 @@ impl<'h> PyTrait<'h> for HeapRead<'h, RePattern> {
         None
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
-        Ok(self.get(vm.heap) == other.get(vm.heap))
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+        let Some(HeapReadOutput::RePattern(other)) = other.read_heap(vm) else {
+            return Ok(None);
+        };
+        Ok(Some(self.get(vm.heap) == other.get(vm.heap)))
     }
 
     fn py_bool(&self, _vm: &mut VM<'h, impl ResourceTracker>) -> bool {

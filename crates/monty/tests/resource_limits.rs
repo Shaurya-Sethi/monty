@@ -2,10 +2,14 @@
 ///
 /// These tests verify that the `ResourceTracker` system correctly enforces
 /// allocation limits, time limits, and triggers garbage collection.
-use std::time::{Duration, Instant};
+use std::{
+    thread,
+    time::{Duration, Instant},
+};
 
 use monty::{
-    ExcType, LimitedTracker, MontyObject, MontyRun, NameLookupResult, PrintWriter, ResourceLimits, RunProgress,
+    ExcType, LimitedTracker, MontyObject, MontyRepl, MontyRun, NameLookupResult, PrintWriter, ResourceLimits,
+    RunProgress,
 };
 
 /// Resolves consecutive `NameLookup` yields by providing a `Function` object for each name.
@@ -365,6 +369,15 @@ fn fstring_dynamic_precision_memory_bounded() {
         // Literal precisions above the compact bytecode encoding capacity are
         // emitted as dynamic specs and must still be checked at runtime.
         "f'{1.0:.999999999f}'",
+        // `#g`/`#G`/type-less-with-precision keep every trailing zero, so they
+        // scale with precision just like `f` and need the same guard (plain `g`
+        // strips zeros and is bounded, so it is intentionally not listed here).
+        "p = 999_999_999\nf'{1.0:#.{p}g}'",
+        "p = 999_999_999\nf'{1.0:#.{p}G}'",
+        "p = 999_999_999\nf'{1.0:#.{p}}'",
+        // Fractional grouping weaves separators into the digit run, so the
+        // native string exceeds `precision` bytes; the guard budgets for them.
+        "p = 999_999_999\nf'{1.0:.{p}_f}'",
     ] {
         let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
         let limits = ResourceLimits::new()
@@ -385,6 +398,53 @@ fn fstring_dynamic_precision_memory_bounded() {
     assert_eq!(
         result.expect("small dynamic precision should succeed"),
         MontyObject::String("1.500".to_owned())
+    );
+}
+
+/// Regression: formatting a huge big integer in a non-decimal radix
+/// (`:b`/`:o`/`:x`/`:X`) must be bounded by the memory limit before the digit
+/// string is materialized.
+///
+/// `BigInt::to_str_radix` builds the full ASCII digit string on the (untracked)
+/// Rust heap before `allocate_string` accounts for it. CPython's
+/// `int_max_str_digits` only caps *decimal* conversions, so a value created
+/// within the memory limit and then rendered as binary (`f"{1 << n:b}"` is ~`n`
+/// bytes) would allocate gigabytes outside the tracker. `format_long_int` now
+/// size-checks each radix render up front.
+#[test]
+fn fstring_bigint_radix_memory_bounded() {
+    for code in [
+        "n = 1 << 50_000_000\nf'{n:b}'",
+        "n = 1 << 50_000_000\nf'{n:o}'",
+        "n = 1 << 50_000_000\nf'{n:x}'",
+        "n = 1 << 50_000_000\nf'{n:X}'",
+        "n = 1 << 50_000_000\nf'{n:#x}'",
+    ] {
+        let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+        // 8 MiB budget: the `1 << 50_000_000` value itself is ~6.25 MB (50M bits)
+        // so it builds fine, but every radix render exceeds the limit — binary is
+        // ~50 MB, octal ~16.6 MB, and even hex (the most compact, ~12.5 MB) is
+        // over budget. A generous time limit ensures a timeout can't mask a
+        // missing memory check.
+        let limits = ResourceLimits::new()
+            .max_memory(8_388_608)
+            .max_duration(Duration::from_secs(30));
+        let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+
+        let exc = result
+            .err()
+            .unwrap_or_else(|| panic!("{code:?}: should exceed the memory limit"));
+        assert_eq!(exc.exc_type(), ExcType::MemoryError, "{code:?}: wrong exc type");
+    }
+
+    // A small big integer formats correctly under the same limit (the size
+    // check is free below the large-result threshold).
+    let ex = MontyRun::new("n = 1 << 80\nf'{n:x}'".to_owned(), "test.py", vec![]).unwrap();
+    let limits = ResourceLimits::new().max_memory(1_048_576);
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+    assert_eq!(
+        result.expect("small big-int radix should succeed"),
+        MontyObject::String("100000000000000000000".to_owned())
     );
 }
 
@@ -1365,7 +1425,7 @@ fn timeout_in_tuple_repetition() {
 
 /// Test that comparing two large equal lists respects the time limit.
 ///
-/// `List::py_eq()` iterates element-wise comparing pairs. With large equal lists,
+/// `List::py_eq_impl()` iterates element-wise comparing pairs. With large equal lists,
 /// it must compare every element before returning True.
 #[test]
 fn timeout_in_list_equality() {
@@ -1379,7 +1439,7 @@ a == b
 
 /// Test that comparing two large equal dicts respects the time limit.
 ///
-/// `Dict::py_eq()` iterates all entries checking keys and values. With large equal
+/// `Dict::py_eq_impl()` iterates all entries checking keys and values. With large equal
 /// dicts, it must check every entry before returning True.
 #[test]
 fn timeout_in_dict_equality() {
@@ -1426,6 +1486,53 @@ s.splitlines()
 // Each test uses the external function "interrupt" pattern: the large object is
 // built with NO time limit, then execution pauses at `interrupt()`. A short time
 // limit is set before resuming, so only the `repr()` call is timed.
+
+/// The `max_duration` clock measures cumulative *execution* time only: time
+/// spent suspended at an external call must not consume the budget. Here the
+/// host stays away for 3× the entire budget while the sandbox is suspended,
+/// and execution still completes — under the old wall-clock-since-creation
+/// accounting this raised TimeoutError on resume.
+#[test]
+fn suspension_time_does_not_count_toward_max_duration() {
+    let code = "interrupt()\nsum(range(100))";
+    let run = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+    let limits = ResourceLimits::new().max_duration(Duration::from_millis(100));
+    let progress = run
+        .start(vec![], LimitedTracker::new(limits), PrintWriter::Stdout)
+        .unwrap();
+    let call = resolve_name_lookups(progress)
+        .unwrap()
+        .into_function_call()
+        .expect("interrupt call");
+
+    thread::sleep(Duration::from_millis(300));
+
+    let progress = call.resume(MontyObject::None, PrintWriter::Stdout).unwrap();
+    let RunProgress::Complete(value) = progress else {
+        panic!("expected Complete, got another suspension");
+    };
+    assert_eq!(value, MontyObject::Int(4950));
+}
+
+/// `MontyRepl::call_function` is a host boundary like `feed_run`: it must
+/// open an execution window so the cumulative `max_duration` clock advances
+/// during the call. With the window left closed, `elapsed()` is frozen and an
+/// infinite loop in the called function would run forever.
+#[test]
+fn call_function_enforces_max_duration() {
+    let limits = ResourceLimits::new().max_duration(Duration::from_millis(50));
+    let mut repl = MontyRepl::new("test.py", LimitedTracker::new(limits));
+    repl.feed_run(
+        "def spin():\n    while True:\n        pass",
+        vec![],
+        PrintWriter::Stdout,
+    )
+    .unwrap();
+    let exc = repl
+        .call_function("spin", vec![], PrintWriter::Stdout)
+        .expect_err("infinite loop must hit the time limit");
+    assert_eq!(exc.exc_type(), ExcType::TimeoutError);
+}
 
 /// Helper: builds a large object without time limit, then runs `repr()` on it
 /// with a short time limit and asserts it produces a TimeoutError promptly.

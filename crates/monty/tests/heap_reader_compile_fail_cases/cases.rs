@@ -9,8 +9,6 @@
 //! `heap_reader_compile_fail_tests` cfg (plus a per-test cfg) is set.
 
 use super::*;
-#[cfg(heap_reader_compile_fail_test_heap_mutation_while_reading)]
-use crate::types::str::allocate_string;
 
 /// Must not compile: mutating heap entries via `dec_ref` while holding a reference
 /// derived from `HeapRead::get`.
@@ -24,7 +22,6 @@ use crate::types::str::allocate_string;
 /// Expected: E0502 (cannot borrow `*heap` as mutable because it is also borrowed as immutable)
 #[cfg(heap_reader_compile_fail_test_heap_mutation_while_reading)]
 fn heap_mutation_while_reading(list_id: HeapId, heap: &mut Heap, tracker: &impl ResourceTracker) {
-    let _ = allocate_string::<crate::resource::NoLimitTracker>;
     HeapReader::with(heap, tracker, &mut (), |heap, ()| {
         let a = match heap.read(list_id) {
             HeapReadOutput::List(list) => list,
@@ -85,9 +82,9 @@ fn dec_ref_while_reading(list_id: HeapId, heap: &mut Heap, tracker: &impl Resour
 ///
 /// Expected: E0521 (borrowed data escapes outside of closure)
 #[cfg(heap_reader_compile_fail_test_smuggle_heap_read)]
-fn smuggle_heap_read(list_id: HeapId, heap: &mut Heap<impl ResourceTracker>) {
+fn smuggle_heap_read(list_id: HeapId, heap: &mut Heap, tracker: &impl ResourceTracker) {
     let mut smuggled: Option<HeapRead<'_, List>> = None;
-    HeapReader::with(heap, &mut (), |heap, ()| {
+    HeapReader::with(heap, tracker, &mut (), |heap, ()| {
         let a = match heap.read(list_id) {
             HeapReadOutput::List(list) => list,
             _ => unreachable!(),

@@ -24,10 +24,11 @@ install: .cargo install-py install-js ## Install the package, dependencies, and 
 
 .PHONY: dev-py
 dev-py: ## Install the python package for development
+	uv run maturin develop --uv -m crates/monty-cli/Cargo.toml
 	uv run maturin develop --uv -m crates/monty-python/Cargo.toml
 
-.PHONY: dev-js
-dev-js: ## Build the JS package (debug)
+.PHONY: build-js
+build-js: install-js ## Build the JS package (napi debug build + TypeScript)
 	cd crates/monty-js && npm run build:debug
 
 .PHONY: lint-js
@@ -35,7 +36,8 @@ lint-js: install-js ## Lint JS code with oxlint
 	cd crates/monty-js && npm run lint
 
 .PHONY: test-js
-test-js: dev-js ## Build and test the JS package
+test-js: build-js ## Test the JS package (builds the monty binary the workers run)
+	cargo build -p monty-cli
 	cd crates/monty-js && npm test
 
 .PHONY: smoke-test-js
@@ -44,11 +46,46 @@ smoke-test-js: ## Run smoke test for JS package (builds, packs, and tests instal
 
 .PHONY: dev-py-release
 dev-py-release: ## Install the python package for development with a release build
+	uv run maturin develop --uv -m crates/monty-cli/Cargo.toml --release
 	uv run maturin develop --uv -m crates/monty-python/Cargo.toml --release
 
-.PHONY: dev-js-release
-dev-js-release: ## Build the JS package (release)
-	cd crates/monty-js && npm run build
+.PHONY: build-wasm
+build-wasm: install-js ## Build the wasm artifacts (requires the wasm32-wasip1-threads toolchain)
+	# NOTE: regenerates index.js/index.d.ts from the wasm target (which has no
+	# pool API) — run build-js afterwards to restore the native loader
+	cd crates/monty-js && npm run build:wasm && npm run build:ts
+
+.PHONY: test-wasm
+test-wasm: ## Test the in-process API against the wasm build (requires a prior build-wasm)
+	cd crates/monty-js && NAPI_RS_FORCE_WASI=1 npx ava "__test__/wasm_*.spec.ts"
+
+# OCI image for the monty-cpython sandbox worker. Override to retag/push, e.g.
+# `make build-cpython-image MONTY_CPYTHON_IMAGE=ghcr.io/pydantic/monty-cpython`.
+MONTY_CPYTHON_IMAGE ?= monty-cpython
+
+# `--load` puts the built image into the local docker daemon; `--push` sends
+# it to a registry. Overridden by `upload-cpython-image` below.
+BUILDX_OUTPUT ?= --load
+
+.PHONY: build-cpython-image
+build-cpython-image: ## Build the monty-cpython docker image (locally by default; overridden by upload-cpython-image)
+	# context is the workspace root so the crate's path deps resolve; the
+	# Dockerfile is selected with -f and uses crates/monty-cpython/Dockerfile.dockerignore
+	# tag with the commit sha so the build is pinnable
+	$(eval IMAGE_TAG := $(MONTY_CPYTHON_IMAGE):$(shell git rev-parse --short HEAD))
+	docker buildx build --platform linux/amd64 \
+		-t $(IMAGE_TAG) \
+		-t $(MONTY_CPYTHON_IMAGE):latest \
+		-f crates/monty-cpython/Dockerfile \
+		$(BUILDX_OUTPUT) \
+		.
+	@echo "built image: $(IMAGE_TAG) ($(BUILDX_OUTPUT))"
+
+.PHONY: upload-cpython-image
+upload-cpython-image: ## Build the monty-cpython docker image and push to ghcr.io/pydantic/monty-cpython
+	$(MAKE) build-cpython-image \
+		MONTY_CPYTHON_IMAGE=ghcr.io/pydantic/monty-cpython \
+		BUILDX_OUTPUT=--push
 
 .PHONY: dev-py-pgo
 dev-py-pgo: ## Install the python package for development with profile-guided optimization
@@ -72,7 +109,7 @@ format-py: ## Format Python code - WARNING be careful about this command as it m
 
 .PHONY: format-js
 format-js: install-js ## Format JS code with prettier
-	cd crates/monty-js && npm run format:prettier
+	cd crates/monty-js && npm run format
 
 .PHONY: format
 format: format-rs format-py format-js ## Format Rust code, this does not format Python code as we have to be careful with that
@@ -80,13 +117,22 @@ format: format-rs format-py format-js ## Format Rust code, this does not format 
 .PHONY: lint-rs
 lint-rs:  ## Lint Rust code with clippy and import checks
 	@cargo clippy --version
-	cargo clippy --workspace --tests -p monty-bench --bench main -- -D warnings
+	cargo clippy --workspace --tests -p monty-bench --benches -- -D warnings
 	cargo clippy --workspace --tests --all-features -- -D warnings
 	./scripts/check_imports.py
 
 .PHONY: clippy-fix
 clippy-fix: ## Fix Rust code with clippy
-	cargo clippy --workspace --tests -p monty-bench --bench main --all-features --fix --allow-dirty
+	cargo clippy --workspace --tests -p monty-bench --benches --all-features --fix --allow-dirty
+
+.PHONY: generate-proto
+generate-proto: ## Regenerate monty-proto's checked-in code from the .proto schema
+	cargo run -p monty-proto --features generate --bin generate-proto
+	cargo +nightly fmt -p monty-proto
+
+.PHONY: check-proto
+check-proto: generate-proto ## Verify monty-proto's checked-in code matches the .proto schema
+	git diff --exit-code crates/monty-proto/src/generated crates/monty-proto/tests/oracle
 
 .PHONY: lint-py
 lint-py: dev-py ## Lint Python code with ruff
@@ -111,7 +157,7 @@ test-no-features: ## Run rust tests without any features enabled
 	cargo run -p monty-datatest
 
 .PHONY: test-memory-model-checks
-test-memory-model-checks: ## Run rust tests with memory-model-checks enabled
+test-memory-model-checks: ## Run rust tests with memory-model-checks enabled - THIS IS EXTREMELY SLOW, SHOULD MOSTLY BE RUN IN CI OR IF ABSOLUTELY NECESSARY
 	cargo test -p monty --features "memory-model-checks test-hooks"
 	cargo run -p monty-datatest --features memory-model-checks
 
@@ -133,8 +179,13 @@ miri-test-cases: ## Run library inline tests under miri (particularly relevant f
 	MIRIFLAGS=-Zmiri-disable-isolation cargo +nightly miri run -p monty-datatest -- run_test_cases_monty
 
 .PHONY: test-type-checking
-test-type-checking: ## Run rust tests on monty_type_checking
-	cargo test -p monty_type_checking -p monty_typeshed
+test-type-checking: ## Run rust tests on monty-type-checking
+	cargo test -p monty-type-checking -p monty-typeshed
+
+.PHONY: test-subprocess
+test-subprocess: ## Run subprocess protocol, child-mode, and worker-pool tests
+	cargo build -p monty-cli
+	cargo test -p monty-proto -p monty-cli -p monty-pool
 
 .PHONY: pytest
 pytest: ## Run Python tests with pytest
@@ -149,7 +200,7 @@ test-docs: dev-py ## Test docs examples only
 	cargo test --doc -p monty
 
 .PHONY: test
-test: test-memory-model-checks test-ref-count-return test-no-features test-type-checking test-py miri ## Run rust tests
+test: test-memory-model-checks test-ref-count-return test-no-features test-type-checking test-subprocess test-py miri ## Run rust tests
 
 .PHONY: testcov
 testcov: ## Run Rust tests with coverage, print table, and generate HTML report
@@ -165,7 +216,7 @@ testcov: ## Run Rust tests with coverage, print table, and generate HTML report
 	cargo llvm-cov --no-report -p monty --features ref-count-return
 	cargo llvm-cov run --no-report -p monty-datatest --features ref-count-return
 	echo "coverage for `make test-type-checking`"
-	cargo llvm-cov --no-report -p monty_type_checking -p monty_typeshed
+	cargo llvm-cov --no-report -p monty-type-checking -p monty-typeshed
 	echo "Generating reports:"
 	cargo llvm-cov report --ignore-filename-regex '(tests/|test_cases/|/tests\.rs$$)'
 	cargo llvm-cov report --html --ignore-filename-regex '(tests/|test_cases/|/tests\.rs$$)'
@@ -185,6 +236,11 @@ update-typeshed: ## Update vendored typeshed from upstream
 .PHONY: bench
 bench: ## Run benchmarks
 	cargo bench -p monty-bench --bench main
+
+.PHONY: bench-pool
+bench-pool: ## Run subprocess pool benchmarks (spawn, checkout, wire round-trips)
+	cargo build -p monty-cli --release
+	MONTY_TEST_BIN=$(CURDIR)/target/release/monty cargo bench -p monty-bench --bench pool
 
 .PHONY: dev-bench
 dev-bench: ## Run benchmarks to test with dev profile
@@ -209,7 +265,7 @@ fuzz-tokens_input_panic: ## Run the `tokens_input_panic` fuzz target (structured
 	cargo +nightly fuzz run --fuzz-dir crates/fuzz tokens_input_panic
 
 .PHONY: main
-main: lint test-memory-model-checks test-py ## run linting and the most important tests
+main: lint test-memory-model-checks test-subprocess test-py ## run linting and the most important tests
 
 # (must stay last!)
 .PHONY: help

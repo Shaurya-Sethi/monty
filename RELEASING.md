@@ -5,14 +5,19 @@
 Update version in both files:
 
 ```bash
-# Edit Cargo.toml - update workspace.package.version
-# Edit crates/monty-js/package.json - update version
+# Edit Cargo.toml - update workspace.package.version AND the internal crate
+#   versions in [workspace.dependencies] (monty, monty-macros, monty-proto,
+#   monty-pool, monty-type-checking, monty-typeshed). These must all equal
+#   workspace.package.version or `cargo publish` will fail.
+# Edit crates/monty-js/package.json - update version AND the optionalDependencies
+#   versions (they must all equal the package version; CI's
+#   create-platform-packages fails if they drift)
 
 # Update Cargo.lock
 make lint-rs
 ```
 
-Both `Cargo.toml` and `package.json` should have the same version (e.g., `0.0.2`).
+`Cargo.toml` and `package.json` should have the same version (e.g., `0.0.2`).
 
 ## 2. Commit and Push
 
@@ -36,7 +41,8 @@ git push
 Once the tag is pushed, CI will:
 - Build wheels for all platforms
 - Publish to PyPI (`pydantic-monty`)
-- Publish to NPM (`@pydantic/monty`)
+- Publish to NPM (`@pydantic/monty` + the platform packages carrying the napi library, the `monty` binary, and the wasm build)
+- Publish the Rust crates to crates.io (`monty`, `monty-cli`, `monty-macros`, `monty-proto`, `monty-pool`, `monty-type-checking`, `monty-typeshed`) via `cargo publish --workspace`
 
 Monitor the workflow at https://github.com/pydantic/monty/actions
 

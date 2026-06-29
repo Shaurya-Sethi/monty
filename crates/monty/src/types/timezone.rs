@@ -18,7 +18,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     hash::HashValue,
-    heap::{HeapData, HeapId, HeapItem, HeapRead, HeapReader},
+    heap::{HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput, HeapReader},
     intern::Interns,
     resource::ResourceTracker,
     types::{
@@ -238,8 +238,13 @@ impl<'h> PyTrait<'h> for HeapRead<'h, TimeZone> {
         None
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
-        Ok(self.get(vm.heap).offset_seconds == other.get(vm.heap).offset_seconds)
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+        let Some(HeapReadOutput::TimeZone(other)) = other.read_heap(vm) else {
+            return Ok(None);
+        };
+        Ok(Some(
+            self.get(vm.heap).offset_seconds == other.get(vm.heap).offset_seconds,
+        ))
     }
 
     fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {

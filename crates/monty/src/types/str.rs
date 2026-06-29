@@ -6,6 +6,7 @@ use std::{borrow::Cow, cell::Cell, cmp::Ordering, fmt, fmt::Write, mem, ops};
 
 use ahash::AHashSet;
 use smallvec::smallvec;
+use unicode_general_category::{GeneralCategory, get_general_category};
 
 use super::{Bytes, MontyIter, PyTrait};
 use crate::{
@@ -22,7 +23,7 @@ use crate::{
         Type,
         slice::{normalize_sequence_index, slice_collect_iterator},
     },
-    value::{EitherStr, Value},
+    value::{EitherStr, Value, eq_str},
 };
 
 /// Python string value stored on the heap.
@@ -210,8 +211,9 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Str> {
         Ok(allocate_char(c, vm.heap)?)
     }
 
-    fn py_eq(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<bool> {
-        Ok(self.get(vm.heap).0 == other.get(vm.heap).0)
+    fn py_eq_impl(&self, other: &Value, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<bool>> {
+        // A heap string equals an interned or heap string with the same content.
+        Ok(eq_str(self.get(vm.heap).as_str(), other, vm))
     }
 
     fn py_hash(&self, _self_id: HeapId, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<HashValue>> {
@@ -497,42 +499,77 @@ fn str_join<'h>(
     Ok(allocate_string(result, vm.heap)?)
 }
 
-/// Writes a Python repr() string for a given string slice to a formatter.
+/// Writes a Python `repr()` string for a given string slice to a formatter.
 ///
-/// Chooses between single and double quotes based on the string content:
-/// - Uses double quotes if the string contains single quotes but not double quotes
-/// - Uses single quotes by default, escaping any contained single quotes
+/// Quote choice matches CPython: single quotes by default, switching to double
+/// quotes only when the string contains a `'` but no `"` (so the quote needn't
+/// be escaped). Backslash, the active quote, and `\n`/`\t`/`\r` use the short
+/// escapes; any other **non-printable** character is escaped numerically
+/// (`\xNN`/`\uNNNN`/`\UNNNNNNNN`), e.g. `repr('\x00') == "'\\x00'"` and
+/// `repr('\xa0') == "'\\xa0'"`.
 ///
-/// Common escape sequences (backslash, newline, tab, carriage return) are always escaped.
+/// "Non-printable" matches CPython's `str.isprintable` (see
+/// [`repr_needs_escape`]): Unicode categories `C*` and `Z*`, except the ASCII
+/// space. Category data comes from `unicode-general-category`, whose Unicode
+/// version may differ slightly from CPython's, affecting only recently
+/// (re)assigned code points.
 pub fn string_repr_fmt(s: &str, f: &mut impl Write) -> fmt::Result {
-    // Check if the string contains single quotes but not double quotes
-    if s.contains('\'') && !s.contains('"') {
-        // Use double quotes if string contains only single quotes
-        f.write_char('"')?;
-        for c in s.chars() {
-            match c {
-                '\\' => f.write_str("\\\\")?,
-                '\n' => f.write_str("\\n")?,
-                '\t' => f.write_str("\\t")?,
-                '\r' => f.write_str("\\r")?,
-                _ => f.write_char(c)?,
-            }
-        }
-        f.write_char('"')
+    let quote = if s.contains('\'') && !s.contains('"') {
+        '"'
     } else {
-        // Use single quotes by default, escape any single quotes in the string
-        f.write_char('\'')?;
-        for c in s.chars() {
-            match c {
-                '\\' => f.write_str("\\\\")?,
-                '\n' => f.write_str("\\n")?,
-                '\t' => f.write_str("\\t")?,
-                '\r' => f.write_str("\\r")?,
-                '\'' => f.write_str("\\'")?,
-                _ => f.write_char(c)?,
+        '\''
+    };
+    f.write_char(quote)?;
+    for c in s.chars() {
+        match c {
+            '\\' => f.write_str("\\\\")?,
+            '\n' => f.write_str("\\n")?,
+            '\t' => f.write_str("\\t")?,
+            '\r' => f.write_str("\\r")?,
+            _ if c == quote => {
+                f.write_char('\\')?;
+                f.write_char(quote)?;
             }
+            _ if repr_needs_escape(c) => write_char_escape(c, f)?,
+            _ => f.write_char(c)?,
         }
-        f.write_char('\'')
+    }
+    f.write_char(quote)
+}
+
+/// Whether `c` is escaped numerically in a Python `repr` — i.e. it is not
+/// "printable" in CPython's sense.
+///
+/// Non-printable = Unicode general categories `Other` (`Cc`, `Cf`, `Cs`, `Co`,
+/// `Cn`) and `Separator` (`Zl`, `Zp`, `Zs`), with the sole exception of the
+/// ASCII space `U+0020`. The `\t`/`\n`/`\r` short escapes are handled by the
+/// caller before this is consulted.
+fn repr_needs_escape(c: char) -> bool {
+    c != ' '
+        && matches!(
+            get_general_category(c),
+            GeneralCategory::Control
+                | GeneralCategory::Format
+                | GeneralCategory::Surrogate
+                | GeneralCategory::PrivateUse
+                | GeneralCategory::Unassigned
+                | GeneralCategory::LineSeparator
+                | GeneralCategory::ParagraphSeparator
+                | GeneralCategory::SpaceSeparator
+        )
+}
+
+/// Writes the numeric repr escape for a single character, matching CPython's
+/// width selection: `\xNN` for code points `<= 0xFF`, `\uNNNN` for `<= 0xFFFF`,
+/// otherwise `\UNNNNNNNN`.
+fn write_char_escape(c: char, f: &mut impl Write) -> fmt::Result {
+    let cp = c as u32;
+    if cp <= 0xFF {
+        write!(f, "\\x{cp:02x}")
+    } else if cp <= 0xFFFF {
+        write!(f, "\\u{cp:04x}")
+    } else {
+        write!(f, "\\U{cp:08x}")
     }
 }
 

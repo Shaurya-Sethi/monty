@@ -75,6 +75,40 @@ the sole security boundary. **Changes to `path_security.rs` require careful secu
 
 `heap.rs` and `path_security.rs` are the two most security-critical files in the codebase.
 
+## Subprocess isolation (`monty-proto`, `monty subprocess`, `monty-pool`)
+
+A monty process can never be made fully crash-proof against memory errors
+(stack overflow aborts, allocator aborts), so monty can run as isolated worker
+subprocesses:
+
+- `crates/monty-proto` — the wire protocol: a protobuf schema
+  (`proto/monty/v1/monty.proto`), checked-in prost-generated code (regenerate
+  with `make generate-proto`; CI enforces sync via `make check-proto`),
+  4-byte LE length-prefixed framing, and fallible conversions between wire
+  types and `MontyException`/etc. Values are special-cased for performance:
+  the `monty.v1.MontyObject` message is mapped via prost `extern_path` onto
+  `WireObject` (`src/wire.rs`), a hand-written `prost::Message` impl that
+  encodes borrowed `MontyObject`s and validates *while* decoding — no mirror
+  struct, no deep clone on the hot path. `tests/differential.rs` proves it
+  byte-compatible against a fully prost-generated oracle (`tests/oracle/`,
+  regenerated and CI-checked together with the main codegen). Parents must
+  treat frames from a (possibly compromised) child as untrusted — wire
+  decoding and proto→Rust conversions validate everything and never panic.
+- `monty subprocess` (in `crates/monty-cli/src/subprocess.rs`) — the child:
+  reads framed requests on stdin, writes framed events on stdout, serving one
+  REPL session per checkout. Strict alternation: one request in, zero or more
+  streamed `Print` events out, then exactly one turn-ending event.
+- `crates/monty-pool` — the parent: an elastic pool of workers with crash
+  detection/replacement and a watchdog enforcing a hard per-turn timeout.
+- `pydantic_monty.Monty` / `pydantic_monty.AsyncMonty` — the ONLY Python
+  execution surface (there is no in-process Python API): sync and async pools
+  of workers (`with Monty() as pool: with pool.checkout() as session:
+  session.feed_run(...)`, and the `async with` / `await feed_run` equivalents).
+
+The contract for crash detection: a child that exits or EOFs *without* a
+`FatalError` event crashed hard; the parent discards it and replaces it. See
+`limitations/pool-architecture.md` for host-API divergences from in-process execution.
+
 ## Bytecode VM Architecture
 
 Monty is implemented as a bytecode VM, same as CPython.
@@ -230,11 +264,14 @@ make install-py           Install python dependencies
 make install-js           Install JS package dependencies
 make install              Install the package, dependencies, and pre-commit for local development
 make dev-py               Install the python package for development
-make dev-js               Build the JS package (debug)
+make build-js             Build the JS package (compile TypeScript)
 make lint-js              Lint JS code with oxlint
-make test-js              Build and test the JS package
+make test-js              Test the JS package (builds the monty binary the workers run)
 make dev-py-release       Install the python package for development with a release build
-make dev-js-release       Build the JS package (release)
+make build-wasm           Build the wasm artifacts (requires the wasm32-wasip1-threads toolchain)
+make test-wasm            Test the in-process API against the wasm build (requires a prior build-wasm)
+make build-cpython-image  Build the monty-cpython docker image (locally by default)
+make upload-cpython-image Build the monty-cpython docker image and push to ghcr.io/pydantic/monty-cpython
 make dev-py-pgo           Install the python package for development with profile-guided optimization
 make format-rs            Format Rust code with fmt
 make format-py            Format Python code - WARNING be careful about this command as it may modify code and break tests silently!
@@ -242,15 +279,17 @@ make format-js            Format JS code with prettier
 make format               Format Rust code, this does not format Python code as we have to be careful with that
 make lint-rs              Lint Rust code with clippy and import checks
 make clippy-fix           Fix Rust code with clippy
+make generate-proto       Regenerate monty-proto's checked-in code from the .proto schema
+make check-proto          Verify monty-proto's checked-in code matches the .proto schema
 make lint-py              Lint Python code with ruff
 make lint                 Lint the code with ruff and clippy
 make format-lint-rs       Format and lint Rust code with fmt and clippy
 make format-lint-py       Format and lint Python code with ruff
 make test-no-features     Run rust tests without any features enabled
-make test-memory-model-checks Run rust tests with memory-model-checks enabled
+make test-memory-model-checks Run rust tests with memory-model-checks enabled - THIS IS EXTREMELY SLOW, SHOULD MOSTLY BE RUN IN CI OR IF ABSOLUTELY NECESSARY
 make test-ref-count-return Run rust tests with ref-count-return enabled
 make test-cases           Run tests cases only
-make test-type-checking   Run rust tests on monty_type_checking
+make test-type-checking   Run rust tests on monty-type-checking
 make pytest               Run Python tests with pytest
 make test-py              Build the python package (debug profile) and run tests
 make test-docs            Test docs examples only
@@ -259,6 +298,7 @@ make testcov              Run Rust tests with coverage, print table, and generat
 make complete-tests       Fill in incomplete test expectations using CPython
 make update-typeshed      Update vendored typeshed from upstream
 make bench                Run benchmarks
+make bench-pool           Run subprocess pool benchmarks (spawn, checkout, wire round-trips)
 make dev-bench            Run benchmarks to test with dev profile
 make profile              Profile the code with pprof and generate flamegraphs
 make type-sizes           Write type sizes for the crate to ./type-sizes.txt (requires nightly and top-type-sizes)
@@ -347,10 +387,8 @@ NOT!
 
 ### Docstrings and comments.
 
-IMPORTANT: every struct, enum and function should be an informative but concise docstring to
-explain what it does and why and any considerations or potential foot-guns of using that type.
-
-COMMENTS AND DOCSTRINGS SHOULD BE CONCISE - EXCESSIVELY VERBOSE DOCSTRINGS MAKE THE CODE HARDER TO READ AND MAINTAIN!
+IMPORTANT: every struct, enum and function should have an informative but concise docstring to
+explain what it does and why; and any considerations or potential foot-guns of using that type.
 
 The only exception is trait implementation methods where a docstring is not necessary if the method is self-explanatory.
 
@@ -366,7 +404,11 @@ If you encounter a comment or docstring that's out of date - you MUST update it 
 
 Similarly, if you encounter code that has no docstrings or comments, or they are minimal, you should add more detail.
 
+Always use single back-ticks in python docstrings - they should be markdown, not rst!
+
 NOTE: COMMENTS AND DOCSTRINGS ARE EXTREMELY IMPORTANT TO THE LONG TERM HEALTH OF THE PROJECT.
+
+NOTE: COMMENTS AND DOCSTRINGS SHOULD BE CONCISE - EXCESSIVELY VERBOSE DOCSTRINGS MAKE THE CODE HARDER TO READ AND MAINTAIN!
 
 ## Tests
 
@@ -549,6 +591,9 @@ Workflow: write `assert_snapshot!(value, @"");`, then `cargo insta test --accept
 ## Python Package (`pydantic-monty`)
 
 The Python package provides Python bindings for the Monty interpreter, located in `crates/monty-python/`.
+Execution always happens in `monty` worker subprocesses — there is no in-process execution API.
+The surface is `Monty` (sync pool) and `AsyncMonty` (async pool), each with
+`pool.checkout(...)` sessions driven by `feed_run` (a coroutine on async sessions).
 
 ### Structure
 
@@ -599,7 +644,7 @@ Use `pytest.raises` for expected exceptions, like this
 
 ```py
 with pytest.raises(ValueError) as exc_info:
-    m.run(print_callback=callback)
+    session.feed_run(code, print_callback=callback)
 assert exc_info.value.args[0] == snapshot('stopped at 3')
 ```
 
@@ -627,88 +672,99 @@ Reference counting alone cannot reclaim cycles. Monty uses **Bacon–Rajan trial
 
 **Resource limits**: When resource limits (allocations, memory, time) are exceeded, execution terminates with a `ResourceError`. No guarantees are made about the state of the heap or reference counts after a resource limit is exceeded. The heap may contain orphaned objects with incorrect refcounts. This is acceptable because resource exhaustion is a terminal error - the execution context should be discarded.
 
-## JavaScript Package (`monty-js`)
+## JavaScript Package (`@pydantic/monty`, `crates/monty-js/`)
 
-The JavaScript package provides Node.js bindings for the Monty interpreter via napi-rs, located in `crates/monty-js/`.
+The JavaScript package is a **napi-rs binding over `monty-pool`** — the same
+Rust pool/protocol engine `pydantic_monty` uses — wrapped by a thin
+TypeScript layer. The native binding exposes turn-level primitives
+(`NativePool`, `NativeSession.feed/resume*`); the TypeScript drive loop
+answers suspension events (external functions, `os` callbacks, async
+futures) where promises are native. Pool elasticity, watchdogs, crash
+recovery, framing and value conversion all live in Rust.
 
 ### Structure
 
-- `crates/monty-js/src/lib.rs` - Rust source for napi-rs bindings
-- `crates/monty-js/index.js` - Auto-generated JS loader that detects platform and loads the appropriate native binding
-- `crates/monty-js/index.d.ts` - TypeScript type declarations (auto-generated)
-- `crates/monty-js/__test__/` - Tests using ava
+- `crates/monty-js/src/` - Rust napi crate: `pool.rs` (NativePool /
+  NativeSession over `monty-pool`), `convert.rs` (JS ↔ MontyObject),
+  `exceptions.rs`, `limits.rs`, `mount.rs`, and `monty_cls.rs` (the legacy
+  in-process API, the only surface available on wasm)
+- `crates/monty-js/ts/` - TypeScript wrapper: `pool.ts` (Monty),
+  `session.ts` (MontySession + drive loop), `errors.ts`, `binary.ts`
+  (monty binary resolution), `mount.ts`, `native.ts` (turn-object typings),
+  `wasm.ts` (in-process API wrapper, exported as `@pydantic/monty/wasm`)
+- `index.js` / `index.d.ts` - napi-generated loader (created by
+  `npm run build:napi`; gitignored)
+- `crates/monty-js/npm/` - generated platform packages shipping the napi
+  `.node` library *and* the `monty` binary (`@pydantic/monty-<platform>`,
+  selected via optionalDependencies; `napi create-npm-dirs` +
+  `scripts/create-platform-packages.mjs`)
+- `crates/monty-js/__test__/` - Tests using ava (`wasm_*.spec.ts` cover the
+  in-process API and also run against the wasm build in CI)
 
 ### Current API
 
-The package exposes:
-
-- `Monty` class - Parse and execute Python code with inputs, external functions, and resource limits
-- `MontySnapshot` / `MontyComplete` - For iterative execution with `start()` / `resume()`
-- `runMontyAsync()` - Helper for async external functions
-- `MontySyntaxError` / `MontyRuntimeError` / `MontyTypingError` - Error classes
-
 ```ts
-import { Monty, MontySnapshot, runMontyAsync } from '@pydantic/monty'
+import { Monty } from '@pydantic/monty'
 
-// Basic execution
-const m = new Monty('x + 1', { inputs: ['x'] })
-const result = m.run({ inputs: { x: 10 } }) // returns 11
+await using pool = await Monty.create({ maxProcesses: 8, requestTimeout: 30 })
+await using session = await pool.checkout({ typeCheck: false })
 
-// Iterative execution for external functions
-const m2 = new Monty('fetch(url)', { inputs: ['url'], externalFunctions: ['fetch'] })
-let progress = m2.start({ inputs: { url: 'https://...' } })
-if (progress instanceof MontySnapshot) {
-  progress = progress.resume({ returnValue: 'response data' })
-}
+await session.feedRun('x = 21') // session state persists across feeds
+const result = await session.feedRun('x * 2', {
+  inputs: { y: 1 },
+  externalFunctions: { fetch: async (url: string) => '...' }, // sync or async
+  printCallback: (stream, text) => {},
+})
 ```
+
+Errors: `MontyError` (base), `MontySyntaxError`, `MontyRuntimeError`,
+`MontyTypingError`, and `MontyCrashedError` (worker death; pool recovers).
+`MountDir` and the `os`/`NOT_HANDLED` callback work like the Python package.
 
 See `crates/monty-js/README.md` for full API documentation.
 
 ### Building and Testing
 
 ```bash
-# Install dependencies
-make install-js
-
-# Build native binding (debug)
-make build-js
-
-# Build native binding (release)
-make build-js-release
-
-# Run tests
-make test-js
-
-# Format JavaScript code
-make format-js
-
-# Lint JavaScript code
-make lint-js
+make install-js   # npm install
+make build-js     # napi debug build + compile TypeScript
+make test-js      # builds the napi binding + debug monty binary, then runs ava
+make lint-js      # oxlint
+make format-js    # prettier
+make smoke-test-js  # packs + installs the package and platform binary package
 ```
 
-Or run directly in `crates/monty-js`:
-
-```bash
-npm install
-npm run build        # release build
-npm run build:debug  # debug build
-npm test
-```
+Tests run straight from `ts/` via `@oxc-node/core` against the locally built
+`.node`; the workers resolve the `monty` binary from the workspace
+`target/debug` build automatically.
 
 ### JavaScript Test Guidelines
 
 - Tests use [ava](https://github.com/avajs/ava) and live in `crates/monty-js/__test__/`
-- Tests are written in TypeScript
+- Tests are written in TypeScript; use the `setupPool` helper from `__test__/helpers.ts`
 - Follow the existing test style in the `__test__/` directory
+
+## WebAssembly build (`@pydantic/monty/wasm`)
+
+The legacy in-process API (`Monty`, `MontySnapshot`, `MontyRepl`,
+`runMontyAsync`, ...) ships inside the same `@pydantic/monty` package under
+the `/wasm` subpath, for browsers and other environments where subprocesses
+are impossible (the crate's `wasm32-wasip1-threads` napi target; the
+subprocess pool is `#[cfg]`-gated off there). On Node.js, the subprocess
+pool is always preferred — a sandbox crash in the in-process API takes the
+host process with it. Built and tested in CI; building locally requires the
+wasm toolchain (`make build-wasm`).
 
 ## Limitations documentation (`./limitations/`)
 
 Every pull request that adds, changes, or removes user-visible behavior MUST
 land (or update) a markdown document under `./limitations/` describing how
-the feature diverges from CPython and what subset of the CPython surface
+the feature DIVERGES from CPython and what subset of the CPython surface
 area Monty actually implements. The directory is the single source of truth
 for "what does Monty *not* do that CPython does" — module-level docstrings
 and inline comments are not sufficient on their own.
+
+**NOTE**: `./limitations/` SHOULD **ONLY** INCLUDE INFORMATION ABOUT BEHAVIOR DIVERGENCES FROM CPython, not points that describe behavior that matches CPython's behavior.
 
 One file per feature, named after the builtin / module / construct it
 covers (e.g. `limitations/open.md`, `limitations/asyncio.md`,
@@ -719,7 +775,7 @@ Keep entries concise but comprehensive — list every known divergence,
 including ones that "feel obvious". A divergence that is not written down
 is one that future readers (and future Claude) will assume does not exist.
 Reviewers should reject PRs that change behavior without updating
-`./limitations/`.
+`./limitations/` if necessary.
 
 Structure each file around what a Python user would actually try:
 

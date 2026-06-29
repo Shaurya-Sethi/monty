@@ -106,14 +106,6 @@ async def call_llm(prompt: str, messages: Messages) -> str | Messages:
 prompt: str = ''
 """
 
-m = pydantic_monty.Monty(
-    code,
-    inputs=['prompt'],
-    script_name='agent.py',
-    type_check=True,
-    type_check_stubs=type_definitions,
-)
-
 
 Messages = list[dict[str, Any]]
 
@@ -126,10 +118,17 @@ async def call_llm(prompt: str, messages: Messages) -> str | Messages:
 
 
 async def main():
-    output = await m.run_async(
-        inputs={'prompt': 'testing'},
-        external_functions={'call_llm': call_llm},
-    )
+    async with pydantic_monty.AsyncMonty() as pool:
+        async with pool.checkout(
+            script_name='agent.py',
+            type_check=True,
+            type_check_stubs=type_definitions,
+        ) as session:
+            output = await session.feed_run(
+                code,
+                inputs={'prompt': 'testing'},
+                external_functions={'call_llm': call_llm},
+            )
     print(output)
     #> example output, message count 2
 
@@ -140,68 +139,53 @@ if __name__ == '__main__':
     asyncio.run(main())
 ```
 
-#### Iterative Execution with External Functions
-
-Use `start()` and `resume()` to handle external function calls iteratively,
-giving you control over each call:
-
-```python
-import pydantic_monty
-
-code = """
-data = fetch(url)
-len(data)
-"""
-
-m = pydantic_monty.Monty(code, inputs=['url'])
-
-# Start execution - pauses when fetch() is called
-result = m.start(inputs={'url': 'https://example.com'})
-
-print(type(result))
-#> <class 'pydantic_monty.FunctionSnapshot'>
-print(result.function_name)  # fetch
-#> fetch
-print(result.args)
-#> ('https://example.com',)
-
-# Perform the actual fetch, then resume with the result
-result = result.resume({'return_value': 'hello world'})
-
-print(type(result))
-#> <class 'pydantic_monty.MontyComplete'>
-print(result.output)
-#> 11
-```
-
-#### Serialization
-
-Both `Monty` and snapshot types like `FunctionSnapshot` can be serialized to bytes and restored later.
-This allows caching parsed code or suspending execution across process boundaries:
+Execution happens in a pool of `monty` worker subprocesses, so even a memory
+error triggered by adversarial code (stack overflow, allocator abort) can
+never crash your process — the worker dies, raises `MontyCrashedError`, and
+is replaced. There is also a fully synchronous API:
 
 ```python
 import pydantic_monty
 
-# Serialize parsed code to avoid re-parsing
-m = pydantic_monty.Monty('x + 1', inputs=['x'])
-data = m.dump()
-
-# Later, restore and run
-m2 = pydantic_monty.Monty.load(data)
-print(m2.run(inputs={'x': 41}))
-#> 42
-
-# Serialize execution state mid-flight
-m = pydantic_monty.Monty('fetch(url)', inputs=['url'])
-progress = m.start(inputs={'url': 'https://example.com'})
-state = progress.dump()
-
-# Later, restore and resume (e.g., in a different process)
-progress2 = pydantic_monty.load_snapshot(state)
-result = progress2.resume({'return_value': 'response data'})
-print(result.output)
-#> response data
+with pydantic_monty.Monty() as pool:
+    with pool.checkout() as session:
+        # session state persists between feed_run calls
+        session.feed_run('x = 21')
+        print(session.feed_run('x * 2'))
+        #> 42
 ```
+
+### JavaScript / TypeScript
+
+To install:
+
+```bash
+npm install @pydantic/monty
+```
+
+The JS package is a native (napi) binding over the same Rust worker pool the
+Python package uses — the binding and the `monty` worker binary ship via
+platform-specific npm packages:
+
+```ts
+import { Monty } from '@pydantic/monty'
+
+await using pool = await Monty.create()
+await using session = await pool.checkout()
+
+// session state persists between feedRun calls
+await session.feedRun('x = 21')
+console.log(await session.feedRun('x * 2')) // 42
+
+// external functions may be async
+const result = await session.feedRun('await fetch_data()', {
+  externalFunctions: { fetch_data: async () => 'data' },
+})
+```
+
+For browsers (or anywhere subprocesses are impossible) the same package
+exposes an in-process WebAssembly build under the `@pydantic/monty/wasm`
+subpath (no crash isolation: a sandbox crash is a host crash there).
 
 ### Rust
 
@@ -432,3 +416,11 @@ Running Python directly via `exec()` (~0.1ms) or subprocess (~30ms).
 - **Setup complexity**: None
 - **File mounting**: Direct filesystem access (that's the problem)
 - **Snapshotting**: Possible with durable execution solutions like Temporal
+
+## Part of the Pydantic Stack
+
+The Pydantic Stack is everything you need to ship production-grade AI agents:
+
+- [Pydantic AI](https://pydantic.dev/pydantic-ai?utm_source=github&utm_medium=readme&utm_campaign=monty) - Type-safe agent framework
+- [Pydantic Logfire](https://pydantic.dev/logfire?utm_source=github&utm_medium=readme&utm_campaign=monty) - AI-first, full-stack observability
+- [Logfire AI Gateway](https://pydantic.dev/ai-gateway?utm_source=github&utm_medium=readme&utm_campaign=monty) - Unified LLM proxy

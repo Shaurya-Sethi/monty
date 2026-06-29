@@ -1,0 +1,32 @@
+[package]
+name = "monty-pool"
+version = { workspace = true }
+license = { workspace = true }
+rust-version = { workspace = true }
+edition = { workspace = true }
+authors = { workspace = true }
+description = { workspace = true }
+keywords = { workspace = true }
+categories = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+
+[lib]
+name = "monty_pool"
+
+[dependencies]
+monty = { workspace = true }
+monty-proto = { workspace = true }
+# Blocking WebSocket client for the remote (Websocket) transport. The pool is
+# blocking/threaded, so a synchronous client fits; rustls gives `wss://` support
+# without a system TLS dependency.
+tungstenite = { workspace = true }
+# Pulled in only so the pool can install a process-level rustls `CryptoProvider`
+# before the first `wss://` dial (see `install_crypto_provider` in worker.rs).
+rustls = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

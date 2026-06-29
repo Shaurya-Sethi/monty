@@ -299,19 +299,30 @@ impl Signature {
 
     fn render(&self) -> TokenStream {
         let struct_ident = &self.struct_ident;
+        // Dedicated owning-slots struct for this signature. A `HeapGuard`
+        // around it centralises error-path cleanup in one `DropWithHeap` impl
+        // instead of re-inlining a drop for every slot at every error exit —
+        // which previously made the generated code O(fields²) and dominated
+        // the crate's macro-expansion compile time.
+        let slots_struct_ident = format_ident!("__{}Slots", struct_ident);
 
-        // Per-field temporary slot identifiers.
-        let slots: Vec<Ident> = self
-            .fields
-            .iter()
-            .map(|f| format_ident!("__slot_{}", f.ident))
-            .collect();
+        // Slots-struct field names. We reuse the argument names verbatim (rather
+        // than a `__slot_`-prefixed variant) so the struct doesn't trip
+        // `clippy::struct_field_names` ("all fields share a prefix") — these
+        // names already pass clippy on the real args struct.
+        let slot_idents: Vec<Ident> = self.fields.iter().map(|f| f.ident.clone()).collect();
+        // Field-access expressions (`__slots.year`, …) threaded through the
+        // render helpers in place of the bare slot idents. `#slot` interpolates
+        // a field access just as it did a local, so the helper bodies are
+        // unchanged.
+        let slots: Vec<TokenStream> = slot_idents.iter().map(|id| quote!(__slots.#id)).collect();
 
         // Maximum number of named positional slots (for `at most N` errors).
         let max_positional = self.named_positional_count();
         let has_varargs = self.varargs_idx.is_some();
-        let slot_decls = self.render_slot_decls(&slots);
-        let cleanup_block = self.render_cleanup_block(&slots);
+        let slot_struct_fields = self.render_slot_struct_fields(&slot_idents);
+        let slot_struct_inits = self.render_slot_struct_inits(&slot_idents);
+        let drop_impl_body = self.render_drop_impl_body(&slot_idents);
         let no_kwargs_check = self.render_no_kwargs_check();
         let total_check = self.render_total_check(max_positional);
         let exact_check = self.render_expected_exact_check();
@@ -321,14 +332,34 @@ impl Signature {
         let kwarg_loop = self.render_kwarg_loop(&slots);
         let missing_check = self.render_missing_required_check(&slots);
         let unknown_check = self.render_unknown_kwarg_check();
+        let final_required_check = self.render_final_required_check(&slots);
         let build_struct = self.render_build_struct(&slots);
 
         quote! {
+            /// Owning slots for the corresponding `from_args`. Holds each
+            /// extracted argument (and the `*args` / `**kwargs` collections)
+            /// until the final struct is built. Its `DropWithHeap` impl drops
+            /// every populated slot, so a `HeapGuard` around it keeps refcounts
+            /// balanced on every error path without inlining cleanup per exit.
+            struct #slots_struct_ident {
+                #slot_struct_fields
+            }
+
+            #[automatically_derived]
+            impl crate::heap::DropWithHeap for #slots_struct_ident {
+                fn drop_with_heap<H: crate::heap::ContainsHeap>(self, heap: &mut H) {
+                    use crate::args::FromValue as _; // allow local import
+                    use crate::heap::DropWithHeap as _; // allow local import
+                    #drop_impl_body
+                }
+            }
+
             #[automatically_derived]
             impl #struct_ident {
                 /// Extract arguments into `Self`. On any error path, every
-                /// already-extracted heap value is dropped via `DropWithHeap`
-                /// so refcounts stay balanced.
+                /// already-extracted heap value is dropped via the slots
+                /// struct's `DropWithHeap` impl (driven by a `HeapGuard`), so
+                /// refcounts stay balanced.
                 pub(crate) fn from_args(
                     args: crate::args::ArgValues,
                     vm: &mut crate::bytecode::VM<'_, impl crate::resource::ResourceTracker>,
@@ -339,17 +370,22 @@ impl Signature {
                     let (mut __pos_iter, __kwargs_holder) = args.into_parts();
                     let mut __kwargs_iter = __kwargs_holder.into_iter();
 
-                    #slot_decls
+                    // All owning slots live in `__slots`, guarded so they are
+                    // dropped on every error path by a single `DropWithHeap`
+                    // impl. The two iterators stay local: `__cleanup!` drains
+                    // them explicitly (a fixed 2-line cost, independent of the
+                    // field count), then returns so `__guard` drops `__slots`.
+                    let mut __guard = crate::heap::HeapGuard::new(
+                        #slots_struct_ident { #slot_struct_inits },
+                        vm,
+                    );
+                    let (__slots, vm) = __guard.as_parts_mut();
 
-                    // Drops every owning slot + both iterators on the error
-                    // path. Inlined so it captures every slot ident by name.
                     macro_rules! __cleanup {
                         ($err:expr) => {{
-                            #cleanup_block
-                            // Also drop anything left in the iterators.
                             __pos_iter.drop_with_heap(vm);
                             __kwargs_iter.drop_with_heap(vm);
-                            return Err($err);
+                            return ::std::result::Result::Err($err);
                         }};
                     }
 
@@ -362,6 +398,7 @@ impl Signature {
                     #kwarg_loop
                     #missing_check
                     #unknown_check
+                    #final_required_check
 
                     #build_struct
                 }
@@ -462,6 +499,30 @@ impl Signature {
         }
     }
 
+    /// "Missing required positional argument" error for one field, styled per
+    /// `error_style`. Shared by the deferred missing-required check
+    /// ([`render_missing_required_check`](Self::render_missing_required_check))
+    /// and the final-build path ([`render_build_struct`](Self::render_build_struct))
+    /// so the two stay in sync.
+    fn missing_positional_err(&self, field_name_lit: &LitStr, pos: usize) -> TokenStream {
+        let func_name = self.func_name.as_str();
+        match self.error_style {
+            ErrorStyle::C(_) => quote! {
+                crate::exception_private::ExcType::type_error_c_missing_required(#field_name_lit, #pos)
+            },
+            ErrorStyle::NamedC => quote! {
+                crate::exception_private::ExcType::type_error_c_missing_required_named(
+                    #func_name, #field_name_lit, #pos,
+                )
+            },
+            ErrorStyle::Python => quote! {
+                crate::exception_private::ExcType::type_error_missing_positional_with_names(
+                    #func_name, &[#field_name_lit],
+                )
+            },
+        }
+    }
+
     fn named_positional_count(&self) -> usize {
         self.fields
             .iter()
@@ -542,35 +603,55 @@ impl Signature {
     /// Missing-required check, run *after* the kwarg loop has filled what it
     /// can. Raises the same error as the final-build path but earlier, so
     /// CPython's "missing-required before unknown-kwarg" ordering holds.
-    fn render_missing_required_check(&self, slots: &[Ident]) -> TokenStream {
+    fn render_missing_required_check(&self, slots: &[TokenStream]) -> TokenStream {
         if !self.defer_unknown_kwarg() || self.kwargs_not_supported_yet {
             return TokenStream::new();
         }
-        let func_name = self.func_name.as_str();
         let checks = self.fields.iter().zip(slots).filter_map(|(field, slot)| {
             if !matches!(field.kind, FieldKind::PosOnly | FieldKind::PosOrKeyword) || field.default.is_some() {
                 return None;
             }
             let field_name_lit = LitStr::new(&field.ident.to_string(), field.ident.span());
             let pos = field.pos_index.unwrap_or(0);
-            let missing_expr = match self.error_style {
-                ErrorStyle::C(_) => quote! {
-                    crate::exception_private::ExcType::type_error_c_missing_required(#field_name_lit, #pos)
-                },
-                ErrorStyle::NamedC => quote! {
-                    crate::exception_private::ExcType::type_error_c_missing_required_named(
-                        #func_name, #field_name_lit, #pos,
-                    )
-                },
-                ErrorStyle::Python => quote! {
-                    crate::exception_private::ExcType::type_error_missing_positional_with_names(
-                        #func_name, &[#field_name_lit],
-                    )
-                },
-            };
+            let missing_expr = self.missing_positional_err(&field_name_lit, pos);
             Some(quote! {
                 if #slot.is_none() {
                     __cleanup!(#missing_expr);
+                }
+            })
+        });
+        quote! { #(#checks)* }
+    }
+
+    /// Final required-slot preflight before constructing `Self`.
+    ///
+    /// This deliberately runs after the unknown-kwarg check to preserve the
+    /// existing error ordering for keyword-only arguments. Once this has
+    /// passed, `render_build_struct` can move fields out without any fallible
+    /// `__cleanup!` expressions inside the struct initializer, avoiding
+    /// partial-initialization leaks for already-moved heap values.
+    fn render_final_required_check(&self, slots: &[TokenStream]) -> TokenStream {
+        let func_name = self.func_name.as_str();
+        let checks = self.fields.iter().zip(slots).filter_map(|(field, slot)| {
+            if matches!(field.kind, FieldKind::Varargs | FieldKind::Varkwargs) || field.default.is_some() {
+                return None;
+            }
+
+            let field_name_lit = LitStr::new(&field.ident.to_string(), field.ident.span());
+            let err_expr = if let Some(pos) = field.pos_index {
+                self.missing_positional_err(&field_name_lit, pos)
+            } else {
+                quote! {
+                    crate::exception_private::ExcType::type_error_missing_kwonly_with_names(
+                        #func_name,
+                        &[#field_name_lit],
+                    )
+                }
+            };
+
+            Some(quote! {
+                if #slot.is_none() {
+                    __cleanup!(#err_expr);
                 }
             })
         });
@@ -623,54 +704,58 @@ impl Signature {
         }
     }
 
-    fn render_slot_decls(&self, slots: &[Ident]) -> TokenStream {
+    /// Field declarations for the owning-slots struct. Each positional/keyword
+    /// field is `Option<T>` (absent vs present drives default fallback and
+    /// duplicate detection); `*args` / `**kwargs` are growable `Vec`s.
+    fn render_slot_struct_fields(&self, slots: &[Ident]) -> TokenStream {
         let decls = self.fields.iter().zip(slots).map(|(field, slot)| {
             let ty = &field.ty;
             match field.kind {
                 FieldKind::Varargs => {
                     let elem = vec_element_ty(ty).unwrap_or_else(|| ty.clone());
-                    quote! {
-                        let mut #slot: ::std::vec::Vec<#elem> = ::std::vec::Vec::new();
-                    }
+                    quote! { #slot: ::std::vec::Vec<#elem>, }
                 }
                 FieldKind::Varkwargs => quote! {
-                    let mut #slot: ::std::vec::Vec<(
+                    #slot: ::std::vec::Vec<(
                         crate::intern::StringId,
                         crate::value::Value,
-                    )> = ::std::vec::Vec::new();
+                    )>,
                 },
-                _ => {
-                    // `Option<T>` so we can distinguish absent from present
-                    // (drives default fallback and duplicate detection).
-                    quote! {
-                        let mut #slot: ::std::option::Option<#ty> = ::std::option::Option::None;
-                    }
-                }
+                _ => quote! { #slot: ::std::option::Option<#ty>, },
             }
         });
         quote! { #(#decls)* }
     }
 
-    fn render_cleanup_block(&self, slots: &[Ident]) -> TokenStream {
+    /// Initial values for the owning-slots struct: every slot starts empty
+    /// (`None` / `Vec::new()`) and is filled by the dispatch loops.
+    fn render_slot_struct_inits(&self, slots: &[Ident]) -> TokenStream {
+        let inits = self.fields.iter().zip(slots).map(|(field, slot)| match field.kind {
+            FieldKind::Varargs | FieldKind::Varkwargs => quote! { #slot: ::std::vec::Vec::new(), },
+            _ => quote! { #slot: ::std::option::Option::None, },
+        });
+        quote! { #(#inits)* }
+    }
+
+    /// Body of the slots struct's `DropWithHeap` impl. Consumes `self` by value
+    /// and drops each populated slot exactly once. Generated once per signature
+    /// (not re-inlined at every error exit), so this is the sole copy of the
+    /// cleanup logic the compiler has to type- and borrow-check.
+    fn render_drop_impl_body(&self, slots: &[Ident]) -> TokenStream {
         let drops = self.fields.iter().zip(slots).map(|(field, slot)| match field.kind {
-            FieldKind::Varargs => {
-                quote! {
-                    let __taken = ::std::mem::take(&mut #slot);
-                    __taken.drop_with_heap(vm);
+            FieldKind::Varargs => quote! {
+                self.#slot.drop_with_heap(heap);
+            },
+            FieldKind::Varkwargs => quote! {
+                for (_, __v) in self.#slot {
+                    __v.drop_with_heap(heap);
                 }
-            }
-            FieldKind::Varkwargs => {
-                quote! {
-                    for (_, __v) in ::std::mem::take(&mut #slot) {
-                        __v.drop_with_heap(vm);
-                    }
-                }
-            }
+            },
             _ => {
                 let ty = &field.ty;
                 quote! {
-                    if let ::std::option::Option::Some(__v) = #slot.take() {
-                        <#ty as crate::args::FromValue>::drop_extracted(__v, vm);
+                    if let ::std::option::Option::Some(__v) = self.#slot {
+                        <#ty as crate::args::FromValue>::drop_extracted(__v, heap);
                     }
                 }
             }
@@ -678,7 +763,7 @@ impl Signature {
         quote! { #(#drops)* }
     }
 
-    fn render_positional_loop(&self, slots: &[Ident], max_positional: usize, has_varargs: bool) -> TokenStream {
+    fn render_positional_loop(&self, slots: &[TokenStream], max_positional: usize, has_varargs: bool) -> TokenStream {
         // Build the per-index arms by iterating fields that can accept positionals.
         let mut arms: Vec<TokenStream> = Vec::new();
         let mut arm_idx: usize = 0;
@@ -760,77 +845,41 @@ impl Signature {
         }
     }
 
-    /// `FromValue::from_value` call that fills `slot`. Used by both the
-    /// positional loop (`value_var = __arg`) and the kwarg arms
-    /// (`value_var = __value`) so `encode(42)` and `encode(encoding=42)`
-    /// report identical errors. When `bad_arg` is set, wraps the inner
-    /// error in CPython's `_PyArg_BadArgument` wording.
+    /// Emit the per-field extraction: a thin call to
+    /// [`FromValue::extract_into`], which coerces `value_var` into the field
+    /// type and stores it in `slot`. Used by both the positional loop
+    /// (`value_var = __arg`) and the kwarg arms (`value_var = __value`) so
+    /// `encode(42)` and `encode(encoding=42)` report identical errors.
+    ///
+    /// The heavy lifting (the pre-`from_value` type snapshot and CPython
+    /// `_PyArg_BadArgument` wording selection) lives in `extract_into` —
+    /// monomorphised once per field type and shared across every derive —
+    /// rather than being inlined as tokens at each site. The macro only picks
+    /// the [`ArgErrCtx`] variant; errors still route through `__cleanup!` so
+    /// the argument iterators are drained.
     fn render_from_value_call(
         &self,
         ty: &Type,
-        slot: &Ident,
+        slot: &TokenStream,
         pos: usize,
         arg_name: &str,
         value_var: &Ident,
     ) -> TokenStream {
-        let Some(style) = self.bad_arg else {
-            return quote! {
-                match <#ty as crate::args::FromValue>::from_value(#value_var, vm) {
-                    ::std::result::Result::Ok(__v) => {
-                        #slot = ::std::option::Option::Some(__v);
-                    }
-                    ::std::result::Result::Err(__e) => {
-                        __cleanup!(__e);
-                    }
-                }
-            };
-        };
         let func_name = self.func_name.as_str();
-        let bad_arg_err = match style {
-            BadArgStyle::Positional => quote! {
-                crate::exception_private::ExcType::type_error_bad_arg_pos(
-                    #func_name,
-                    #pos,
-                    __expected,
-                    __got.cpython_arg_name(),
-                )
+        let ctx = match self.bad_arg {
+            None => quote! { crate::args::ArgErrCtx::Plain },
+            Some(BadArgStyle::Positional) => quote! {
+                crate::args::ArgErrCtx::BadArgPos { func_name: #func_name, pos: #pos }
             },
-            BadArgStyle::Named => quote! {
-                crate::exception_private::ExcType::type_error_bad_arg_named(
-                    #func_name,
-                    #arg_name,
-                    __expected,
-                    __got.cpython_arg_name(),
-                )
+            Some(BadArgStyle::Named) => quote! {
+                crate::args::ArgErrCtx::BadArgNamed { func_name: #func_name, arg_name: #arg_name }
             },
         };
         quote! {
-            {
-                // Snapshot the type *before* `from_value` consumes the value
-                // (the error path no longer has access to it). Skip the
-                // lookup when the field type has no CPython label.
-                let __got_type =
-                    if <#ty as crate::args::FromValue>::EXPECTED_TYPE_NAME.is_some() {
-                        ::std::option::Option::Some(#value_var.py_type_heap(vm.heap))
-                    } else {
-                        ::std::option::Option::None
-                    };
-                match <#ty as crate::args::FromValue>::from_value(#value_var, vm) {
-                    ::std::result::Result::Ok(__v) => {
-                        #slot = ::std::option::Option::Some(__v);
-                    }
-                    ::std::result::Result::Err(__e) => {
-                        match (
-                            <#ty as crate::args::FromValue>::EXPECTED_TYPE_NAME,
-                            __got_type,
-                        ) {
-                            (
-                                ::std::option::Option::Some(__expected),
-                                ::std::option::Option::Some(__got),
-                            ) => __cleanup!(#bad_arg_err),
-                            _ => __cleanup!(__e),
-                        }
-                    }
+            match <#ty as crate::args::FromValue>::extract_into(#value_var, &mut #slot, vm, #ctx) {
+                ::std::result::Result::Ok(()) => {}
+                ::std::result::Result::Err(__e) => {
+                    __cleanup!(__e);
                 }
             }
         }
@@ -843,7 +892,7 @@ impl Signature {
         matches!(self.error_style, ErrorStyle::C(_) | ErrorStyle::NamedC)
     }
 
-    fn render_kwarg_loop(&self, slots: &[Ident]) -> TokenStream {
+    fn render_kwarg_loop(&self, slots: &[TokenStream]) -> TokenStream {
         if self.kwargs_not_supported_yet {
             // Pre-check already rejected any kwarg; skip the loop entirely.
             return TokenStream::new();
@@ -865,8 +914,7 @@ impl Signature {
             quote! {
                 let Some(__id) = __key_str.string_id() else {
                     // TODO: intern heap-string keys via `Interns` instead of rejecting.
-                    __value.drop_with_heap(vm);
-                    __key.drop_with_heap(vm);
+                    (__key, __value).drop_with_heap(vm);
                     __cleanup!(crate::exception_private::ExcType::type_error_kwargs_nonstring_key());
                 };
                 __key.drop_with_heap(vm);
@@ -906,8 +954,7 @@ impl Signature {
                 let func_name = &self.func_name;
                 pos_only_arms.push(quote! {
                     if __key_str.matches(#key_id_expr, vm.interns) {
-                        __value.drop_with_heap(vm);
-                        __key.drop_with_heap(vm);
+                        (__key, __value).drop_with_heap(vm);
                         __cleanup!(crate::exception_private::ExcType::type_error_positional_only(#func_name, #field_name_lit));
                     } else
                 });
@@ -919,8 +966,7 @@ impl Signature {
         quote! {
             while let ::std::option::Option::Some((__key, __value)) = ::std::iter::Iterator::next(&mut __kwargs_iter) {
                 let ::std::option::Option::Some(__key_str) = __key.as_either_str(vm.heap) else {
-                    __value.drop_with_heap(vm);
-                    __key.drop_with_heap(vm);
+                    (__key, __value).drop_with_heap(vm);
                     __cleanup!(crate::exception_private::ExcType::type_error_kwargs_nonstring_key());
                 };
                 #(#pos_only_arms)*
@@ -932,73 +978,33 @@ impl Signature {
         }
     }
 
-    fn render_build_struct(&self, slots: &[Ident]) -> TokenStream {
-        let func_name = self.func_name.as_str();
+    fn render_build_struct(&self, slots: &[TokenStream]) -> TokenStream {
         let fields = self.fields.iter().zip(slots).map(|(field, slot)| {
             let ident = &field.ident;
             match field.kind {
                 FieldKind::Varargs | FieldKind::Varkwargs => {
+                    // The slot lives behind `&mut __slots`, so move its contents
+                    // out with `mem::take`. This also leaves the slot empty, so
+                    // the guard's eventual `DropWithHeap` is a no-op for it.
                     if matches!(field.kind, FieldKind::Varkwargs) {
                         // Empty vec collapses to `Empty` for cheap caller checks.
                         quote! {
                             #ident: if #slot.is_empty() {
                                 crate::args::KwargsValues::Empty
                             } else {
-                                crate::args::KwargsValues::Inline(#slot)
+                                crate::args::KwargsValues::Inline(::std::mem::take(&mut #slot))
                             },
                         }
                     } else {
                         quote! {
-                            #ident: #slot,
+                            #ident: ::std::mem::take(&mut #slot),
                         }
                     }
                 }
                 _ => match &field.default {
-                    None => {
-                        let field_name_lit = LitStr::new(&field.ident.to_string(), field.ident.span());
-                        let pos = field.pos_index.unwrap_or(0);
-                        if field.pos_index.is_some() {
-                            let missing_expr = match self.error_style {
-                                ErrorStyle::C(_) => quote! {
-                                    crate::exception_private::ExcType::type_error_c_missing_required(#field_name_lit, #pos)
-                                },
-                                ErrorStyle::NamedC => quote! {
-                                    crate::exception_private::ExcType::type_error_c_missing_required_named(
-                                        #func_name,
-                                        #field_name_lit,
-                                        #pos,
-                                    )
-                                },
-                                ErrorStyle::Python => quote! {
-                                    crate::exception_private::ExcType::type_error_missing_positional_with_names(
-                                        #func_name,
-                                        &[#field_name_lit],
-                                    )
-                                },
-                            };
-                            quote! {
-                                #ident: match #slot.take() {
-                                    ::std::option::Option::Some(__v) => __v,
-                                    ::std::option::Option::None => {
-                                        __cleanup!(#missing_expr);
-                                    }
-                                },
-                            }
-                        } else {
-                            // Required keyword-only argument.
-                            quote! {
-                                #ident: match #slot.take() {
-                                    ::std::option::Option::Some(__v) => __v,
-                                    ::std::option::Option::None => {
-                                        __cleanup!(crate::exception_private::ExcType::type_error_missing_kwonly_with_names(
-                                            #func_name,
-                                            &[#field_name_lit],
-                                        ));
-                                    }
-                                },
-                            }
-                        }
-                    }
+                    None => quote! {
+                        #ident: #slot.take().expect("required FromArgs slot checked before build"),
+                    },
                     Some(DefaultExpr::DefaultTrait) => quote! {
                         #ident: #slot.take().unwrap_or_default(),
                     },
@@ -1008,6 +1014,11 @@ impl Signature {
                 },
             }
         });
+        // Every required slot was validated by `render_final_required_check`,
+        // so this struct init is infallible: no `__cleanup!` inside the
+        // initializer, hence no partial-move leak of an already-taken field.
+        // The slots are fully drained here, so `__guard` dropping them on scope
+        // exit is a cheap no-op (and still correctly cleans up on error paths).
         quote! {
             ::std::result::Result::Ok(Self {
                 #(#fields)*
@@ -1017,7 +1028,7 @@ impl Signature {
 }
 
 impl Signature {
-    fn kwarg_arm_pos_or_kw(&self, field: &Field, slot: &Ident) -> TokenStream {
+    fn kwarg_arm_pos_or_kw(&self, field: &Field, slot: &TokenStream) -> TokenStream {
         let func_name = self.func_name.as_str();
         let key_id_expr = field.kwarg_string_id_expr();
         let ty = &field.ty;
@@ -1061,7 +1072,7 @@ impl Signature {
         }
     }
 
-    fn kwarg_arm_kw_only(&self, field: &Field, slot: &Ident) -> TokenStream {
+    fn kwarg_arm_kw_only(&self, field: &Field, slot: &TokenStream) -> TokenStream {
         let func_name = self.func_name.as_str();
         let key_id_expr = field.kwarg_string_id_expr();
         let ty = &field.ty;

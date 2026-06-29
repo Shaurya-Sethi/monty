@@ -74,4 +74,36 @@ defined. The abstract `tzinfo` base class is not exposed.
 `strftime` supports the directives that map onto Rust's `chrono`
 formatting; locale-specific directives (`%c`, `%x`, `%X`, `%p`) follow
 Rust's defaults rather than the C locale and may differ from CPython.
-`%Z` always emits an empty string for naive datetimes.
+
+### Unrecognised directives
+
+An **unrecognised directive is passed through verbatim**, matching glibc/Linux
+CPython (`strftime('%Q') == '%Q'`, `strftime('%') == '%'`). Note this is a
+deliberate choice of *one* CPython, not all of them: macOS CPython instead
+drops the `%` (`strftime('%Q') == 'Q'`), because unknown-directive handling is
+delegated to the platform C library and is genuinely platform-dependent. The
+same pass-through applies to f-string formatting (below).
+
+### Directives that need data the value lacks
+
+A directive that is *recognised* but can't be rendered for the given value
+raises `ValueError: Invalid format string` rather than substituting a default
+the way CPython does. The known cases:
+
+- Time directives (`%H`, `%M`, `%S`, `%p`, …) on a bare `date`: Monty stores a
+  `date` with no time component, so these raise; CPython fills zeros (`'00'`,
+  `'AM'`).
+- `%z` / `%Z` on a naive `date`/`datetime`: Monty raises; CPython yields `''`.
+- `%z` / `%Z` on an **aware** `datetime`: Monty formats the wall-clock (naive)
+  components and so raises rather than emitting the offset/name; CPython yields
+  `'+0200'` / `'CEST'`. (Threading the timezone through formatting is not yet
+  implemented.)
+
+f-strings format `date`/`datetime` values through `strftime`, matching
+CPython's `__format__`: `f'{dt:%Y-%m-%d}'` is equivalent to
+`dt.strftime('%Y-%m-%d')`, and an empty spec (`f'{dt}'` or `f'{dt:}'`) uses
+`str(dt)`. One edge-case divergence: a spec that also happens to be a valid
+format mini-language spec (e.g. `f'{dt:>10}'` or a lone `f'{dt:%}'`) is
+applied as generic string formatting rather than handed to `strftime` —
+CPython treats the *entire* spec as a `strftime` string. Real strftime specs
+(those containing `%` directives like `%Y`) are unaffected.

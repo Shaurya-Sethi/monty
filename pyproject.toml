@@ -4,7 +4,7 @@ version = "0"
 requires-python = ">=3.10"
 
 [tool.uv.workspace]
-members = ["crates/monty-python"]
+members = ["crates/monty-python", "crates/monty-cli"]
 
 [dependency-groups]
 dev = [
@@ -19,6 +19,7 @@ dev = [
     "logfire>=4.25.0",
     "devtools>=0.12.2",
     "pydantic-ai-slim[anthropic,openai]>=1.63.0",
+    "websockets>=14",
 ]
 
 # https://beta.ruff.rs/docs/configuration/
@@ -184,6 +185,7 @@ ignore-words-list = 'crate,NotIn,ser,IST'
 skip = [
     "Cargo.lock",
     "crates/monty-js/package-lock.json",
+
     "crates/monty-typeshed/vendor/typeshed/stdlib/*",
     "crates/monty/src/types/str.rs",
 ]
