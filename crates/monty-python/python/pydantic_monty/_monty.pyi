@@ -19,6 +19,7 @@ __all__ = [
     'NOT_HANDLED',
     'AsyncMonty',
     'AsyncMontySession',
+    'AsyncMontyWebsocket',
     'CollectStreams',
     'CollectString',
     'Frame',
@@ -444,6 +445,23 @@ class MontySession:
         bytes using monty's existing dump format. The session stays usable.
         """
 
+    def install_dependencies(self, requirements: list[str]) -> None:
+        """
+        Install third-party Python packages into the session, making them
+        importable by subsequent `feed_run` calls. Session-scoped and
+        repeatable; an empty list is a no-op.
+
+        Only supported by an embedded-CPython worker (e.g. `monty-cpython`).
+        Against the pure-Monty sandbox worker, or on a `uv` install failure
+        (the error carries uv's stderr), raises `MontyRuntimeError`; the
+        session stays usable. Bounded by the pool's `request_timeout`, so raise
+        it for large dependency sets.
+
+        Requirements are PEP 508 strings, e.g. `["httpx>=0.27", "numpy"]`.
+        Dependencies a script declares inline via PEP 723 (`# /// script`) are
+        installed automatically on `feed_run` and need no call here.
+        """
+
     @property
     def worker_pid(self) -> int | None:
         """OS process id of this session's worker (diagnostics/tests).
@@ -500,6 +518,77 @@ class AsyncMonty:
         The worker is checked out of the pool by `async with` on the returned
         session and returned to the pool when the `async with` block exits.
         Arguments are identical to `Monty.checkout`.
+        """
+
+@final
+class AsyncMontyWebsocket:
+    """
+    Async context manager owning a pool of remote `monty` workers reached over a
+    WebSocket. The dialed peer is the server side — a relay that pairs this
+    connection with a child (such as `monty-cpython websocket`, which dials the
+    relay from the other end), or any server that accepts the connection and
+    bridges to a worker.
+
+    Like `AsyncMonty`, but instead of spawning local subprocesses each checkout
+    dials the configured URL. There is no sync counterpart — remote turns are
+    network-bound. `checkout()` yields the same `AsyncMontySession`.
+
+    ```python
+    async with AsyncMontyWebsocket('ws://127.0.0.1:8799') as pool:
+        async with pool.checkout() as session:
+            result = await session.feed_run('1 + 1')
+    ```
+    """
+
+    def __new__(
+        cls,
+        url: str,
+        *,
+        max_processes: int | None = None,
+        checkout_timeout: float | None = None,
+        request_timeout: float | None = 10.0,
+    ) -> Self:
+        """
+        Configure a remote worker pool; connections are made by `async with` and
+        each checkout (no workers are pre-warmed).
+
+        Arguments:
+            url: `ws://`/`wss://` URL to dial — a relay, or any server that
+                bridges to a worker. Dialed verbatim; any session/rendezvous routing the URL
+                needs (e.g. a `/<uuid>/parent` path for a relay) must already be
+                in it.
+            max_processes: Cap on concurrent connections (defaults to the CPU
+                count); checkouts beyond it wait.
+            checkout_timeout: Seconds `checkout()` waits for capacity before
+                raising `TimeoutError`. `None` waits forever.
+            request_timeout: Hard per-call deadline in seconds (default 10.0) — a
+                worker that exceeds it has its connection killed and the call
+                raises `MontyCrashedError` with `timed_out=True`. This also
+                bounds the wait when a relay accepts the connection but never
+                produces a worker. Pass `None` to wait indefinitely.
+
+                Note that `install_dependencies` is a turn too, so the default
+                10.0 is often too low for it — a real `uv pip install` can exceed
+                it. Raise `request_timeout` (or pass `None`) when installing
+                dependencies over the WebSocket transport.
+        """
+
+    async def __aenter__(self) -> Self: ...
+    async def __aexit__(self, *args: Any) -> None: ...
+    def checkout(
+        self,
+        *,
+        script_name: str = 'main.py',
+        limits: ResourceLimits | None = None,
+        type_check: bool = False,
+        type_check_stubs: str | None = None,
+        dataclass_registry: list[type] | None = None,
+    ) -> AsyncMontySession:
+        """
+        Prepare a REPL session served by a dedicated remote connection.
+
+        Identical to `AsyncMonty.checkout`; the connection is opened by
+        `async with` on the returned session.
         """
 
 @final
@@ -576,6 +665,19 @@ class AsyncMontySession:
         """
         Serialize the worker's session state (idle or suspended) to opaque
         bytes using monty's existing dump format. The session stays usable.
+        """
+
+    async def install_dependencies(self, requirements: list[str]) -> None:
+        """
+        Async counterpart of `MontySession.install_dependencies`: install
+        third-party packages into the session (off the event loop) so later
+        `feed_run` calls can import them. Session-scoped and repeatable; an
+        empty list is a no-op.
+
+        Only supported by an embedded-CPython worker. Against the pure-Monty
+        sandbox worker, or on a `uv` install failure, raises
+        `MontyRuntimeError`; the session stays usable. PEP 723 inline
+        dependencies are installed automatically on `feed_run`.
         """
 
     @property

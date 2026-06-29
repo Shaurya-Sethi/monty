@@ -343,6 +343,20 @@ impl PyMontySession {
         Ok(PyBytes::new(py, &state))
     }
 
+    /// Installs third-party Python packages into the session via the worker's
+    /// `uv`, making them importable by subsequent `feed_run` calls.
+    /// Session-scoped and repeatable; an empty list is a no-op.
+    ///
+    /// Only the embedded-CPython worker supports this. Against the `monty`
+    /// sandbox worker, or on a uv install failure (carrying uv's stderr), this
+    /// raises `MontyRuntimeError`; the session stays usable. Blocks the calling
+    /// thread with the GIL released, bounded by the pool's `request_timeout`.
+    fn install_dependencies(&self, py: Python<'_>, requirements: Vec<String>) -> PyResult<()> {
+        self.used.store(true, Ordering::Relaxed);
+        py.detach(|| install_deps_checkout(&self.checkout, requirements))
+            .map_err(|e| pool_err_to_py(py, e))
+    }
+
     /// OS process id of this session's worker, or `None` when no worker is
     /// attached or a turn is in flight (diagnostics/tests).
     ///
@@ -463,6 +477,108 @@ impl PyAsyncMonty {
     }
 
     /// Prepares a REPL session; the worker is checked out by `async with`.
+    #[pyo3(signature = (
+        *,
+        script_name = "main.py",
+        limits = None,
+        type_check = false,
+        type_check_stubs = None,
+        dataclass_registry = None,
+    ))]
+    fn checkout(
+        &self,
+        py: Python<'_>,
+        script_name: &str,
+        limits: Option<&Bound<'_, PyDict>>,
+        type_check: bool,
+        type_check_stubs: Option<&Bound<'_, PyString>>,
+        dataclass_registry: Option<&Bound<'_, PyList>>,
+    ) -> PyResult<PyAsyncMontySession> {
+        Ok(PyAsyncMontySession {
+            pool: Arc::clone(&self.pool),
+            repl_config: parse_repl_config(py, script_name, limits, type_check, type_check_stubs)?,
+            dc_registry: DcRegistry::from_list(py, dataclass_registry)?,
+            checkout: Arc::new(Mutex::new(None)),
+            used: AtomicBool::new(false),
+        })
+    }
+}
+
+/// Async context manager owning a pool of remote `monty` workers reached over a
+/// WebSocket. The dialed peer is the server side: a relay that pairs this
+/// connection with a child (e.g. `monty-cpython websocket`, which dials in from
+/// the other end), or any server that bridges to a worker.
+///
+/// Mirrors [`PyAsyncMonty`] but, instead of spawning local subprocesses, each
+/// checkout dials the configured URL; `checkout()` yields the same
+/// [`PyAsyncMontySession`]. There is no sync counterpart — remote turns are
+/// network-bound, so the async API is the only one.
+#[pyclass(name = "AsyncMontyWebsocket", module = "pydantic_monty", frozen)]
+pub struct PyAsyncMontyWebsocket {
+    config: PoolConfig,
+    pool: SharedPool,
+}
+
+#[pymethods]
+impl PyAsyncMontyWebsocket {
+    /// Creates the pool configuration; connections are made by `async with` and
+    /// each checkout (no workers are pre-warmed).
+    ///
+    /// `request_timeout` is the per-turn deadline in seconds (default 10.0): a
+    /// remote relay that accepts the connection but never produces a worker
+    /// would otherwise leave each turn blocked on the socket until the far end
+    /// closes it. Pass `None` to wait indefinitely.
+    ///
+    /// Note that `install_dependencies` is also a turn, so the default 10.0 is
+    /// often too low for it — a real `uv pip install` (e.g. `numpy`) can exceed
+    /// it and surface as `MontyCrashedError`. Raise `request_timeout` (or pass
+    /// `None`) when installing dependencies over the WebSocket transport.
+    #[new]
+    #[pyo3(signature = (
+        url,
+        *,
+        max_processes = None,
+        checkout_timeout = None,
+        request_timeout = 10.0,
+    ))]
+    fn new(
+        url: String,
+        max_processes: Option<usize>,
+        checkout_timeout: Option<f64>,
+        request_timeout: Option<f64>,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            config: parse_websocket_config(url, max_processes, checkout_timeout, request_timeout)?,
+            pool: Arc::new(Mutex::new(None)),
+        })
+    }
+
+    /// Initializes the pool (off the event loop) and returns `self`.
+    fn __aenter__(slf: Py<Self>, py: Python<'_>) -> PyResult<Bound<'_, PyAny>> {
+        let config = slf.get().config.clone();
+        let slot = Arc::clone(&slf.get().pool);
+        future_into_py(py, async move {
+            let pool = spawn_blocking(move || Pool::new(config))
+                .await
+                .map_err(join_error_to_py)?
+                .map_err(|e| Python::attach(|py| pool_err_to_py(py, e)))?;
+            *lock(&slot) = Some(Arc::new(pool));
+            Ok(slf)
+        })
+    }
+
+    /// Closes the pool: capacity is gone; checked-out sessions keep their
+    /// connections until finished.
+    #[pyo3(signature = (*_args))]
+    fn __aexit__<'py>(&self, py: Python<'py>, _args: &Bound<'_, PyTuple>) -> PyResult<Bound<'py, PyAny>> {
+        let pool = lock(&self.pool).take();
+        future_into_py(py, async move {
+            spawn_blocking(move || drop(pool)).await.map_err(join_error_to_py)?;
+            Ok(())
+        })
+    }
+
+    /// Prepares a REPL session; the connection is opened by `async with`.
     #[pyo3(signature = (
         *,
         script_name = "main.py",
@@ -695,6 +811,24 @@ impl PyAsyncMontySession {
         })
     }
 
+    /// Async counterpart of [`PyMontySession::install_dependencies`]: the
+    /// coroutine installs the packages off the event loop, resolving to `None`.
+    /// Raises `MontyRuntimeError` against the `monty` sandbox worker or on a uv
+    /// install failure; the session stays usable.
+    fn install_dependencies<'py>(&self, py: Python<'py>, requirements: Vec<String>) -> PyResult<Bound<'py, PyAny>> {
+        self.used.store(true, Ordering::Relaxed);
+        let checkout = Arc::clone(&self.checkout);
+        future_into_py(py, async move {
+            spawn_blocking(move || install_deps_checkout(&checkout, requirements))
+                .await
+                .map_err(join_error_to_py)?
+                .map_err(|e| Python::attach(|py| pool_err_to_py(py, e)))?;
+            // resolve to None (whereas `()` would convert to an empty tuple) to
+            // match the `-> None` stub and the sync method
+            Ok(None::<()>)
+        })
+    }
+
     /// OS process id of this session's worker, or `None` when no worker is
     /// attached or a turn is in flight (diagnostics/tests). Non-blocking for
     /// the same reason as the sync getter.
@@ -708,9 +842,9 @@ impl PyAsyncMontySession {
 // Shared argument parsing
 // =============================================================================
 
-/// Builds the `monty-pool` config from the (shared) pool constructor
-/// arguments, resolving the binary via `pydantic_monty._binary` when not
-/// given explicitly.
+/// Builds the subprocess-transport `monty-pool` config from the (shared)
+/// `Monty`/`AsyncMonty` constructor arguments, resolving the binary via
+/// `pydantic_monty._binary` when not given explicitly.
 fn parse_pool_config(
     py: Python<'_>,
     binary_path: Option<PathBuf>,
@@ -728,7 +862,7 @@ fn parse_pool_config(
             .call_method0("find_monty_binary")?
             .extract()?,
     };
-    let mut config = PoolConfig::new(binary_path);
+    let mut config = PoolConfig::subprocess(binary_path);
     config.min_processes = min_processes;
     if let Some(max) = max_processes {
         config.max_processes = max;
@@ -788,6 +922,25 @@ fn discard_checkout(checkout: &SharedCheckout) {
     drop(taken);
 }
 
+/// Builds the WebSocket-transport `monty-pool` config from the `AsyncMontyWebsocket`
+/// constructor arguments. Each checkout dials `url` verbatim; there is no
+/// pre-warming, so `min_processes` stays 0 and `max_processes` caps concurrent
+/// connections.
+fn parse_websocket_config(
+    url: String,
+    max_processes: Option<usize>,
+    checkout_timeout: Option<f64>,
+    request_timeout: Option<f64>,
+) -> PyResult<PoolConfig> {
+    let mut config = PoolConfig::websocket(url);
+    if let Some(max) = max_processes {
+        config.max_processes = max;
+    }
+    config.checkout_timeout = checkout_timeout.map(duration_from_secs).transpose()?;
+    config.request_timeout = request_timeout.map(duration_from_secs).transpose()?;
+    Ok(config)
+}
+
 /// Builds the worker-side REPL session config from the (shared) `checkout`
 /// arguments.
 pub(crate) fn parse_repl_config(
@@ -818,6 +971,16 @@ pub(crate) fn active_pool(pool: &SharedPool) -> PyResult<Arc<Pool>> {
 fn dump_checkout(checkout: &SharedCheckout) -> Result<Vec<u8>, PoolError> {
     let mut guard = lock(checkout);
     guard.as_mut().ok_or(PoolError::Finished).and_then(Checkout::dump)
+}
+
+/// Installs dependencies into a live checkout's session (shared by the sync and
+/// async `install_dependencies` methods; runs without the GIL).
+fn install_deps_checkout(checkout: &SharedCheckout, requirements: Vec<String>) -> Result<(), PoolError> {
+    let mut guard = lock(checkout);
+    guard
+        .as_mut()
+        .ok_or(PoolError::Finished)?
+        .install_dependencies(requirements)
 }
 
 /// Everything a feed needs, extracted from Python arguments up front so the

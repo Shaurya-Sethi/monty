@@ -1,17 +1,35 @@
-# Subprocess execution (`monty --subprocess`, `monty-pool`, `Monty`/`AsyncMonty`)
+# Worker execution (`monty subprocess`, `monty-pool`, `Monty`/`AsyncMonty`)
 
 The monty type checker, compiler, and interpreter should run in a separate
 process, except in environments where that's not possible (like wasm), so
 that sandbox crashes that cannot be fully prevented — stack overflow aborts
 and allocator aborts — kill only the worker. The Python package
 (`pydantic_monty`) and the JS package (`@pydantic/monty`) both do this: they
-run everything exclusively in `monty --subprocess` workers driven over a
-protobuf protocol (`crates/monty-proto`), and expose no in-process execution
-API. The language semantics inside a worker are identical to embedding the
-interpreter directly (it is the same interpreter); the notes below are about
-the *host API* surface.
+run everything in workers driven over a protobuf protocol
+(`crates/monty-proto`) and expose no in-process execution API. By default the
+worker is a local `monty subprocess` child; the Python package additionally
+offers `pydantic_monty.AsyncMontyWebsocket`, which reaches a remote child over
+a WebSocket instead (the JS package is subprocess-only). For a `monty subprocess`
+worker the language semantics are identical to embedding the interpreter directly
+(it is the same interpreter), and the notes below are about the *host API* surface.
+
+A WebSocket worker is whatever the relay bridges to, and need not be a Monty
+sandbox at all: the reference remote child is `monty-cpython`, which runs the
+snippet in **real CPython with no sandbox, no resource limits, and full host
+filesystem/network/subprocess access** (it relies on the deployment — a
+container/VM per session — for isolation, not on the language). So none of
+Monty's in-process safety guarantees hold for that transport; treat the remote
+as a trusted-deployment execution surface, not a sandbox. Its CPython-specific
+divergences are documented in `crates/monty-cpython/README.md`.
 
 ## Execution model
+
+The guarantees below describe a **Monty sandbox worker** (`monty subprocess`).
+A WebSocket/`monty-cpython` remote honours the *protocol* shape (REPL turns,
+version-skew check, value encoding) but **none** of the sandbox guarantees —
+resource limits, the no-subprocess invariant (`monty-cpython` itself shells out
+to `uv` for installs), and the empty-environment property are Monty-sandbox
+properties that real CPython does not provide, per the caveat above.
 
 - The protocol (and `pydantic_monty`) is **REPL-only**: a pool checkout is a
   REPL session in a dedicated worker, and a one-shot run is a checkout plus a
@@ -22,6 +40,15 @@ the *host API* surface.
   see the snapshot divergences below.
 - A session whose worker crashed is lost: subsequent calls raise
   `MontyCrashedError`. The pool itself recovers by replacing the worker.
+- **The session `Configure` request carries the parent's `monty_version`, and
+  the worker rejects a mismatch.** The protocol has no in-band negotiation and
+  assumes parent and child are deployed in lockstep, so a child whose version
+  differs from the `monty_version` in `Configure` replies `FatalError` (with a
+  `version skew: parent=… child=…` message) and exits non-zero rather than
+  risk a frame desync. A local subprocess child is built in lockstep with the
+  parent, so this mostly matters for the WebSocket transport, where the remote
+  child is deployed separately — a `monty-cpython` (or `monty`) child on a
+  different version replies `FatalError` and the pool surfaces it cleanly.
 - Resource exhaustion (e.g. `max_duration_secs`) is terminal for the
   *session*: later feeds keep failing with the same resource error. The
   worker process is reused for the next checkout.
@@ -61,9 +88,8 @@ the *host API* surface.
   never in a worker's memory, where a sandbox escape or memory disclosure
   could reach them. This is invisible to sandbox code — `os.getenv` etc. are
   OS calls answered by the host, never reads of the worker's own
-  environment. In Rust, `monty_pool::PoolConfig::extra_args` is the only
-  worker configuration channel outside the protocol; Python and JS do not
-  expose that knob.
+  environment. The public Python and JS bindings expose no worker
+  configuration channel outside the protocol.
 - **Worker binary resolution is part of the host trust boundary.** Python and
   JS resolve the worker from an explicit constructor path first, then
   `MONTY_BIN`, then their bundled platform package (or Python scripts
@@ -131,6 +157,25 @@ the *host API* surface.
 - **`os=` fallback** receives `(function_name, args, kwargs)`; mount-covered
   filesystem calls are handled inside the worker and never reach the
   callback.
+- **Dependency installation is only available on the embedded-CPython worker.**
+  `session.install_dependencies([...])` (sync and async in `pydantic_monty`;
+  `session.installDependencies([...])` in `@pydantic/monty`) makes the
+  `monty-cpython` worker `uv pip install` the PEP 508 requirements into a
+  virtualenv at `./.venv` (pre-created in the image, see the crate `Dockerfile`)
+  and add its `site-packages` to `sys.path`, so later feeds can import them. It
+  is session-scoped and repeatable; an empty list is a no-op; it requires `uv` on
+  `PATH` (override: `MONTY_UV`) and network access, and the packages are discarded
+  with the per-session sandbox when the session ends. It is bounded by the pool's
+  `request_timeout` (raise it for large dependency sets). The Monty sandbox
+  worker (`monty subprocess`) has no host interpreter to install for, so the
+  call raises `MontyRuntimeError` (the session stays usable). See
+  `crates/monty-cpython/README.md`.
+- **PEP 723 inline dependencies are auto-installed by the CPython worker.**
+  Before running a feed, the `monty-cpython` worker scans the snippet for a
+  PEP 723 `# /// script` block and installs its `dependencies` (same `uv` path
+  as above) so the imports resolve — no protocol involvement, mirroring
+  `uv run`. The Monty sandbox worker has no such behavior: a `# /// script`
+  block is just a comment and its dependencies are never installed.
 - **`dump()`** bytes use a subprocess-specific envelope and can only be
   restored into another subprocess worker of the same version, via
   `session.load` / `session.load_snapshot` (Rust `Checkout::restore`).

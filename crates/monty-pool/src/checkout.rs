@@ -3,7 +3,7 @@
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use monty::{ExcType, MontyException, MontyObject, PrintStream, ResourceLimits};
-use monty_proto::{FrameError, exceeds_max_value_depth, pb};
+use monty_proto::{FrameError, MONTY_VERSION, exceeds_max_value_depth, pb, validate_requirement};
 
 use crate::{PoolError, pool::PoolInner, watchdog::DeadlineGuard, worker::Worker};
 
@@ -178,6 +178,11 @@ impl Checkout {
                 limits: repl.limits.as_ref().map(Into::into),
                 type_check: repl.type_check,
                 type_check_stubs: repl.type_check_stubs.clone(),
+                // This crate ships the matching `monty` binary, so our own
+                // version is always what the child expects. The child rejects a
+                // mismatch with a `FatalError` (relevant when a remote driver
+                // built against a different version reuses the wire format).
+                monty_version: MONTY_VERSION.to_owned(),
             })),
         };
         match this.request_turn(&request, this.pool.config.request_timeout, &mut |_, _| {})? {
@@ -255,7 +260,7 @@ impl Checkout {
         }
         ensure_sendable(inputs.iter().map(|(_, value)| value))?;
         let request = pb::ParentRequest {
-            kind: Some(pb::parent_request::Kind::ReplFeed(pb::ReplFeed {
+            kind: Some(pb::parent_request::Kind::Feed(pb::Feed {
                 code: code.to_owned(),
                 inputs: inputs
                     .into_iter()
@@ -361,6 +366,45 @@ impl Checkout {
         self.expect_turn(&request, on_print)
     }
 
+    /// Installs third-party Python packages into the session, making them
+    /// importable by subsequent feeds. Session-scoped and repeatable; an empty
+    /// `requirements` list is a no-op.
+    ///
+    /// Only the embedded-CPython worker (`monty-cpython`) honors this. The
+    /// `monty` sandbox worker has no host interpreter to install for and a uv
+    /// install failure both surface as [`PoolError::Runtime`] (the latter
+    /// carrying uv's stderr); the session stays usable in either case. Bounded
+    /// by the pool's `request_timeout`, so raise it for large dependency sets.
+    ///
+    /// Each requirement is validated here, at the pool boundary, before any
+    /// frame is sent: a string that uv would parse as an option rather than a
+    /// package specifier is rejected with [`PoolError::Runtime`] (a
+    /// `ValueError`). See [`validate_requirement`] for the rationale.
+    pub fn install_dependencies(&mut self, requirements: Vec<String>) -> Result<(), PoolError> {
+        if self.pending.is_some() {
+            return Err(PoolError::Protocol(
+                "install_dependencies called while a suspension is awaiting an answer".to_owned(),
+            ));
+        }
+        // Installing nothing trivially succeeds on any worker — including the
+        // sandbox worker, which would otherwise reject the request outright.
+        if requirements.is_empty() {
+            return Ok(());
+        }
+        for requirement in &requirements {
+            validate_requirement(requirement).map_err(invalid_requirement)?;
+        }
+        let request = pb::ParentRequest {
+            kind: Some(pb::parent_request::Kind::InstallDependencies(pb::InstallDependencies {
+                requirements,
+            })),
+        };
+        match self.request_turn(&request, self.pool.config.request_timeout, &mut |_, _| {})? {
+            ControlEvent::Ok => Ok(()),
+            other => Err(self.protocol_violation(&format!("unexpected reply to InstallDependencies: {other:?}"))),
+        }
+    }
+
     /// Serializes the session (idle or suspended) into opaque bytes that
     /// [`crate::Pool::checkout_load`] can restore — including into a
     /// different worker after this one crashes. The session stays live.
@@ -379,6 +423,17 @@ impl Checkout {
     /// Consumes the checkout. On error the worker is discarded (and the
     /// error reported), but the pool remains healthy either way.
     pub fn finish(mut self) -> Result<(), PoolError> {
+        // A websocket worker is single-use — the pool discards it after every
+        // checkout — so there is no point round-tripping a `Reset` to ready it
+        // for reuse. Dropping it closes the socket, which the child reads as a
+        // clean EOF and exits. Only subprocess workers are reset and returned to
+        // the idle pool for the next checkout.
+        if self.pool.config.transport.is_websocket() {
+            if let Some(worker) = self.worker.take() {
+                self.pool.release_worker(worker);
+            }
+            return Ok(());
+        }
         let request = pb::ParentRequest {
             kind: Some(pb::parent_request::Kind::Reset(pb::Reset {})),
         };
@@ -394,9 +449,10 @@ impl Checkout {
         }
     }
 
-    /// OS process id of the worker (diagnostics/tests).
+    /// OS process id of the worker, when it is a local subprocess (`None` for a
+    /// remote WebSocket worker, or a finished checkout). Diagnostics/tests.
     pub fn pid(&self) -> Option<u32> {
-        self.worker.as_ref().map(Worker::pid)
+        self.worker.as_ref().and_then(Worker::pid)
     }
 
     /// Sends a request and requires the reply to be a [`TurnEvent`].
@@ -690,6 +746,12 @@ fn ensure_sendable<'a>(values: impl IntoIterator<Item = &'a MontyObject>) -> Res
     } else {
         Ok(())
     }
+}
+
+/// Converts a shared requirement-validation failure into a session-preserving
+/// Python `ValueError`.
+fn invalid_requirement(message: String) -> PoolError {
+    PoolError::Runtime(MontyException::new(ExcType::ValueError, Some(message)))
 }
 
 /// The tighter of two optional deadlines (`None` means no deadline).

@@ -1,4 +1,4 @@
-//! Integration tests for `monty --subprocess`: spawn the real binary and
+//! Integration tests for `monty subprocess`: spawn the real binary and
 //! drive it over the wire protocol, including crash scenarios — the entire
 //! point of the subprocess mode is that a dead child is a recoverable event
 //! for the parent.
@@ -14,7 +14,7 @@ use std::{
 use monty::MontyObject;
 use monty_proto::{FrameError, FrameReader, WireObject, pb, write_frame};
 
-/// A spawned `monty --subprocess` child with framed pipes.
+/// A spawned `monty subprocess` child with framed pipes.
 struct ChildProc {
     child: Child,
     writer: ChildStdin,
@@ -24,11 +24,11 @@ struct ChildProc {
 impl ChildProc {
     fn spawn() -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_monty"))
-            .arg("--subprocess")
+            .arg("subprocess")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
-            .expect("failed to spawn monty --subprocess");
+            .expect("failed to spawn monty subprocess");
         let writer = child.stdin.take().expect("child stdin");
         let reader = FrameReader::new(child.stdout.take().expect("child stdout"));
         Self { child, writer, reader }
@@ -65,6 +65,7 @@ impl ChildProc {
             limits: None,
             type_check: false,
             type_check_stubs: None,
+            monty_version: env!("CARGO_PKG_VERSION").to_owned(),
         });
     }
 
@@ -87,7 +88,7 @@ impl ChildProc {
         inputs: Vec<pb::NamedValue>,
         mounts: Vec<pb::Mount>,
     ) -> (Vec<pb::Print>, pb::child_event::Kind) {
-        self.send(pb::parent_request::Kind::ReplFeed(pb::ReplFeed {
+        self.send(pb::parent_request::Kind::Feed(pb::Feed {
             code: code.to_owned(),
             inputs,
             mounts,
@@ -410,6 +411,7 @@ fn child_enforces_time_limit() {
         }),
         type_check: false,
         type_check_stubs: None,
+        monty_version: env!("CARGO_PKG_VERSION").to_owned(),
     });
     let (_, event) = child.feed("while True:\n    pass");
     let error = expect_error(event);
@@ -427,6 +429,26 @@ fn child_enforces_time_limit() {
     child.shutdown();
 }
 
+#[test]
+fn install_dependencies_is_rejected_but_session_survives() {
+    let mut child = ChildProc::spawn();
+    child.create_repl();
+    // The Monty sandbox has no host interpreter to install packages for, so it
+    // refuses `InstallDependencies` with a recoverable error.
+    child.send(pb::parent_request::Kind::InstallDependencies(pb::InstallDependencies {
+        requirements: vec!["numpy".to_owned()],
+    }));
+    let error = expect_error(child.recv());
+    assert_eq!(error.exc_type, "RuntimeError");
+    assert_eq!(
+        error.message.as_deref(),
+        Some("dependency installation is only supported by the CPython worker")
+    );
+    // The session is intact: subsequent feeds still work.
+    assert_eq!(child.feed_complete("1 + 1"), MontyObject::Int(2));
+    child.shutdown();
+}
+
 // =============================================================================
 // Type checking
 // =============================================================================
@@ -439,6 +461,7 @@ fn type_checked_session_rejects_bad_snippets_and_remembers_good_ones() {
         limits: None,
         type_check: true,
         type_check_stubs: None,
+        monty_version: env!("CARGO_PKG_VERSION").to_owned(),
     });
 
     let (_, event) = child.feed("x: int = 'not an int'");
@@ -519,6 +542,7 @@ fn type_check_state_survives_dump_and_load() {
         limits: None,
         type_check: true,
         type_check_stubs: None,
+        monty_version: env!("CARGO_PKG_VERSION").to_owned(),
     });
     // a committed snippet that later feeds must see through the dump
     assert_eq!(child.feed_complete("y = 1"), MontyObject::None);
@@ -569,6 +593,7 @@ fn protocol_violations_keep_the_child_alive() {
         limits: None,
         type_check: false,
         type_check_stubs: None,
+        monty_version: env!("CARGO_PKG_VERSION").to_owned(),
     }));
     let error = expect_error(child.recv());
     assert!(error.message.unwrap().contains("already exists"));
@@ -592,6 +617,29 @@ fn protocol_violations_keep_the_child_alive() {
     );
     assert_eq!(expect_error(event).exc_type, "NameError");
     child.shutdown();
+}
+
+#[test]
+fn version_skew_on_create_is_a_fatal_error() {
+    let mut child = ChildProc::spawn();
+    // A parent built against a different monty version: the child must reject
+    // the session with a FatalError and exit non-zero rather than risk a wire
+    // desync from a mismatched frame layout.
+    child.send(pb::parent_request::Kind::Configure(pb::Configure {
+        script_name: "main.py".to_owned(),
+        limits: None,
+        type_check: false,
+        type_check_stubs: None,
+        monty_version: "0.0.0-not-a-real-version".to_owned(),
+    }));
+    match child.recv() {
+        pb::child_event::Kind::FatalError(fatal) => assert!(fatal.message.contains("version skew")),
+        other => panic!("expected FatalError, got {other:?}"),
+    }
+    let status = child.child.wait().expect("wait");
+    assert_eq!(status.code(), Some(4));
+    // disarm Drop's kill — already exited
+    let _ = child.child.kill();
 }
 
 #[test]
@@ -619,7 +667,7 @@ fn killed_child_is_detected_as_eof() {
     let mut child = ChildProc::spawn();
     child.create_repl();
     // run forever (no limits), then kill the child mid-execution
-    child.send(pb::parent_request::Kind::ReplFeed(pb::ReplFeed {
+    child.send(pb::parent_request::Kind::Feed(pb::Feed {
         code: "while True:\n    pass".to_owned(),
         inputs: vec![],
         mounts: vec![],

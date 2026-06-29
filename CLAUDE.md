@@ -75,7 +75,7 @@ the sole security boundary. **Changes to `path_security.rs` require careful secu
 
 `heap.rs` and `path_security.rs` are the two most security-critical files in the codebase.
 
-## Subprocess isolation (`monty-proto`, `monty --subprocess`, `monty-pool`)
+## Subprocess isolation (`monty-proto`, `monty subprocess`, `monty-pool`)
 
 A monty process can never be made fully crash-proof against memory errors
 (stack overflow aborts, allocator aborts), so monty can run as isolated worker
@@ -94,7 +94,7 @@ subprocesses:
   regenerated and CI-checked together with the main codegen). Parents must
   treat frames from a (possibly compromised) child as untrusted — wire
   decoding and proto→Rust conversions validate everything and never panic.
-- `monty --subprocess` (in `crates/monty-cli/src/subprocess.rs`) — the child:
+- `monty subprocess` (in `crates/monty-cli/src/subprocess.rs`) — the child:
   reads framed requests on stdin, writes framed events on stdout, serving one
   REPL session per checkout. Strict alternation: one request in, zero or more
   streamed `Print` events out, then exactly one turn-ending event.
@@ -270,6 +270,8 @@ make test-js              Test the JS package (builds the monty binary the worke
 make dev-py-release       Install the python package for development with a release build
 make build-wasm           Build the wasm artifacts (requires the wasm32-wasip1-threads toolchain)
 make test-wasm            Test the in-process API against the wasm build (requires a prior build-wasm)
+make build-cpython-image  Build the monty-cpython docker image (locally by default)
+make upload-cpython-image Build the monty-cpython docker image and push to ghcr.io/pydantic/monty-cpython
 make dev-py-pgo           Install the python package for development with profile-guided optimization
 make format-rs            Format Rust code with fmt
 make format-py            Format Python code - WARNING be careful about this command as it may modify code and break tests silently!

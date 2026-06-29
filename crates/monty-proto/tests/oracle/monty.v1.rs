@@ -365,7 +365,7 @@ pub struct NamedValue {
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ParentRequest {
-    #[prost(oneof = "parent_request::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9")]
+    #[prost(oneof = "parent_request::Kind", tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10")]
     pub kind: ::core::option::Option<parent_request::Kind>,
 }
 /// Nested message and enum types in `ParentRequest`.
@@ -375,26 +375,28 @@ pub mod parent_request {
         #[prost(message, tag = "1")]
         Configure(super::Configure),
         #[prost(message, tag = "2")]
-        ReplFeed(super::ReplFeed),
+        InstallDependencies(super::InstallDependencies),
         #[prost(message, tag = "3")]
-        ResumeCall(super::ResumeCall),
+        Feed(super::Feed),
         #[prost(message, tag = "4")]
-        ResumeNameLookup(super::ResumeNameLookup),
+        ResumeCall(super::ResumeCall),
         #[prost(message, tag = "5")]
-        ResumeFutures(super::ResumeFutures),
+        ResumeNameLookup(super::ResumeNameLookup),
         #[prost(message, tag = "6")]
-        Dump(super::Dump),
+        ResumeFutures(super::ResumeFutures),
         #[prost(message, tag = "7")]
-        Load(super::Load),
+        Dump(super::Dump),
         #[prost(message, tag = "8")]
-        Reset(super::Reset),
+        Load(super::Load),
         #[prost(message, tag = "9")]
+        Reset(super::Reset),
+        #[prost(message, tag = "10")]
         Shutdown(super::Shutdown),
     }
 }
 /// Configures the REPL session this child will serve until `Reset`, sent once
 /// when the worker is checked out. The session's repl is materialized lazily on
-/// the first `ReplFeed` (or restored by `Load`), so a checked-out-but-unfed
+/// the first `Feed` (or restored by `Load`), so a checked-out-but-unfed
 /// worker can still be initialized by `Load` instead. Valid only when the
 /// worker has no session yet.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -409,11 +411,18 @@ pub struct Configure {
     /// Optional stub file contents used by type checking.
     #[prost(string, optional, tag = "4")]
     pub type_check_stubs: ::core::option::Option<::prost::alloc::string::String>,
+    /// The parent's monty version (e.g. "0.0.18"). The child rejects the
+    /// session with a `FatalError` when this does not match its own version:
+    /// the protocol has no in-band negotiation and parent and child must be
+    /// deployed in lockstep, so a mismatch is a hard, fail-fast error rather
+    /// than a silent source of frame desync.
+    #[prost(string, tag = "5")]
+    pub monty_version: ::prost::alloc::string::String,
 }
 /// Executes one snippet against the session. Turn ends with `Complete`,
 /// `Error`, `TypingError`, or a suspension event.
 #[derive(Clone, PartialEq, ::prost::Message)]
-pub struct ReplFeed {
+pub struct Feed {
     #[prost(string, tag = "1")]
     pub code: ::prost::alloc::string::String,
     #[prost(message, repeated, tag = "2")]
@@ -487,6 +496,20 @@ pub struct Reset {}
 /// The child replies `Ok` and exits cleanly.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Shutdown {}
+/// Installs third-party Python packages into the session before further feeds,
+/// using `uv pip install --python <venv-python>` against the worker's session
+/// virtualenv. Only the
+/// embedded-CPython worker honors this; the Monty sandbox child rejects it with
+/// an `Error` (it has no host interpreter to install for). Repeatable between
+/// feeds. Turn ends with `Ok` on success or `Error` (carrying uv's stderr) on
+/// failure. Valid only once a session exists (after `Configure`).
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct InstallDependencies {
+    /// PEP 508 requirement strings, e.g. "httpx>=0.27", "numpy". An empty list is
+    /// a no-op that replies `Ok`.
+    #[prost(string, repeated, tag = "1")]
+    pub requirements: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+}
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ChildEvent {
     /// Cumulative execution time consumed by the session's sandbox code, in
@@ -606,7 +629,7 @@ pub struct ResolveFutures {
     pub pending_call_ids: ::prost::alloc::vec::Vec<u32>,
 }
 /// Turn end: the snippet completed with this value. The session is ready for
-/// the next `ReplFeed`.
+/// the next `Feed`.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Complete {
     #[prost(message, optional, tag = "1")]
