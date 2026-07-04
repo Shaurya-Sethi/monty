@@ -1,8 +1,11 @@
 # Exceptions
 
 Monty implements a fixed set of exception classes, listed below. Sandboxed
-code **cannot define new exception classes** (no `class` statement; see
-[language.md](language.md)) — `raise` must use one of these built-ins.
+code **cannot define new exception classes**: the `class` statement exists
+(see [classes.md](classes.md)) but classes cannot inherit, so there is no way
+to subclass `BaseException`/`Exception`. `raise` must therefore use one of
+these built-ins — `raise MyClass()` on a plain user class raises
+`TypeError: exceptions must derive from BaseException`, as in CPython.
 
 ## Implemented exception classes
 
@@ -58,8 +61,11 @@ tracebacks are not preserved across `raise from`.
 
 ## Custom subclasses
 
-Because user `class` definitions are rejected at parse time, there is no
-way to create a new exception class inside the sandbox. Define custom
+User `class` definitions are supported, but classes cannot inherit
+(`class Foo(Exception):` raises `NotImplementedError: ... class inheritance
+and metaclasses`), so there is no way to create a new exception class inside
+the sandbox. Raising a plain user class instance (`raise MyClass()`) fails
+with `TypeError: exceptions must derive from BaseException`. Define custom
 exception types on the host side if needed, or use the built-in subclass
 that best fits.
 
@@ -69,3 +75,21 @@ Tracebacks are formatted to match CPython, including the
 `File "...", line N, in <function>` lines and `~` caret markers (Monty
 uses `~` where CPython uses `^`; the test harness normalizes between
 them). Frame names use `<module>` for top-level code.
+
+Known caret divergences:
+
+- CPython suppresses carets on a frame whose location is exactly the call in a
+  simple `name = f(...)` assignment or `return f(...)` statement (a noise
+  heuristic in `traceback._should_show_carets`); Monty always draws carets for
+  the frame's range.
+- For a frame whose location spans multiple lines (e.g. a caller frame covering
+  a whole multi-line `class` statement), Monty renders the CPython-style source
+  block — all lines when the range covers at most three, otherwise
+  `...<N lines>...` elision — but never draws caret markers under it, where
+  CPython draws multi-line carets for partial-line ranges (e.g. a multi-line
+  binary expression).
+
+Monty never emits CPython's `Did you mean: '...'?` suggestions on
+`NameError`/`AttributeError`. Note this divergence is invisible to the test
+suite: `scripts/run_traceback.py` strips the suggestions from CPython's output
+before comparison, so traceback tests cannot catch it.

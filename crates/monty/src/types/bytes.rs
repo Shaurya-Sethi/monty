@@ -67,7 +67,6 @@
 /// - `maketrans(frm, to)` - Create translation table (staticmethod)
 use std::{
     cell::Cell,
-    cmp::Ordering,
     ffi::c_int,
     fmt::{self, Write},
     mem, ops, str,
@@ -76,7 +75,7 @@ use std::{
 use ahash::AHashSet;
 use smallvec::smallvec;
 
-use super::{MontyIter, PyTrait, Type};
+use super::{CmpOrder, MontyIter, PyTrait, Type};
 use crate::{
     args::{ArgValues, FromArgs, StrArg},
     bytecode::{CallResult, VM},
@@ -192,9 +191,9 @@ impl Bytes {
             Some(v @ Value::Ref(id)) => match vm.heap.get(*id) {
                 HeapData::Str(s) => s.as_str().as_bytes().to_vec(),
                 HeapData::Bytes(b) => b.as_slice().to_vec(),
-                _ => return Err(ExcType::type_error_bytes_init(v.py_type(vm))),
+                _ => return Err(ExcType::type_error_bytes_init(&v.py_type_name(vm))),
             },
-            Some(v) => return Err(ExcType::type_error_bytes_init(v.py_type(vm))),
+            Some(v) => return Err(ExcType::type_error_bytes_init(&v.py_type_name(vm))),
         };
         let heap_id = vm.heap.allocate(HeapData::Bytes(Self::new(new_data)))?;
         Ok(Value::Ref(heap_id))
@@ -284,8 +283,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Bytes> {
         Ok(Some(hash))
     }
 
-    fn py_cmp(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<Ordering>> {
-        Ok(Some(self.get(vm.heap).0.cmp(&other.get(vm.heap).0)))
+    fn py_cmp(&self, other: &Self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<CmpOrder> {
+        Ok(CmpOrder::Ordered(self.get(vm.heap).0.cmp(&other.get(vm.heap).0)))
     }
 
     fn py_bool(&self, vm: &mut VM<'h, impl ResourceTracker>) -> bool {
@@ -759,7 +758,7 @@ fn extract_bytes_for_prefix_suffix(
                     if let Ok(b) = extract_single_bytes_for_prefix_suffix(item, vm) {
                         prefixes.push(b);
                     } else {
-                        let item_type = item.py_type(vm);
+                        let item_type = item.py_type_name(vm);
                         return Err(ExcType::type_error(format!(
                             "{method_name} first arg must be bytes or a tuple of bytes, \
                              not tuple containing {item_type} at index {i}"
@@ -770,12 +769,12 @@ fn extract_bytes_for_prefix_suffix(
             }
             _ => Err(ExcType::type_error(format!(
                 "{method_name} first arg must be bytes or a tuple of bytes, not {}",
-                value.py_type(vm)
+                value.py_type_name(vm)
             ))),
         },
         _ => Err(ExcType::type_error(format!(
             "{method_name} first arg must be bytes or a tuple of bytes, not {}",
-            value.py_type(vm)
+            value.py_type_name(vm)
         ))),
     }
 }
@@ -2001,14 +2000,14 @@ fn bytes_join<'h>(
                 if let HeapData::Bytes(b) = vm.heap.get(*heap_id) {
                     result.extend_from_slice(b.as_slice());
                 } else {
-                    let t = item.py_type(vm);
+                    let t = item.py_type_name(vm);
                     return Err(ExcType::type_error(format!(
                         "sequence item {index}: expected a bytes-like object, {t} found"
                     )));
                 }
             }
             _ => {
-                let t = item.py_type(vm);
+                let t = item.py_type_name(vm);
                 return Err(ExcType::type_error(format!(
                     "sequence item {index}: expected a bytes-like object, {t} found"
                 )));
@@ -2186,7 +2185,7 @@ pub fn bytes_fromhex(args: ArgValues, vm: &mut VM<'_, impl ResourceTracker>) -> 
             }
         }
         _ => {
-            let t = hex_value.py_type(vm);
+            let t = hex_value.py_type_name(vm);
             return Err(ExcType::type_error(format!("fromhex() argument must be str, not {t}")));
         }
     };
