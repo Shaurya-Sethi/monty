@@ -119,6 +119,7 @@ impl StandardLib {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub(crate) enum ModuleFunctions {
     Asyncio(asyncio::AsyncioFunctions),
+    Collections(collections::CollectionsFunctions),
     Json(json::JsonFunctions),
     Math(math::MathFunctions),
     Os(os::OsFunctions),
@@ -140,6 +141,7 @@ impl fmt::Display for ModuleFunctions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Asyncio(func) => write!(f, "{func}"),
+            Self::Collections(func) => write!(f, "{func}"),
             Self::Json(func) => write!(f, "{func}"),
             Self::Math(func) => write!(f, "{func}"),
             Self::Os(func) => write!(f, "{func}"),
@@ -161,6 +163,7 @@ impl ModuleFunctions {
     pub fn call(self, vm: &mut VM<'_, impl ResourceTracker>, args: ArgValues) -> RunResult<CallResult> {
         match self {
             Self::Asyncio(functions) => asyncio::call(vm, functions, args),
+            Self::Collections(functions) => collections::call(vm, functions, args).map(CallResult::Value),
             Self::Json(functions) => json::call(vm, functions, args).map(CallResult::Value),
             Self::Math(functions) => math::call(vm, functions, args).map(CallResult::Value),
             Self::Os(functions) => os::call(vm, functions, args),

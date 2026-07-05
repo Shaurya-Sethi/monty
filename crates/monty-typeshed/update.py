@@ -334,6 +334,17 @@ def main() -> int:
     for file in CUSTOM_DIR.glob('*.pyi'):
         shutil.copy2(file, STDLIB_DIR)
         custom_count += 1
+    # Package overrides: a `custom/<pkg>/` directory replaces the matching
+    # module file within the vendored `stdlib/<pkg>/` package (e.g.
+    # `custom/collections/__init__.pyi` narrows `collections` to Monty's
+    # implemented members while leaving `collections/abc.pyi` untouched).
+    for pkg_dir in CUSTOM_DIR.iterdir():
+        if not pkg_dir.is_dir():
+            continue
+        dest_pkg = STDLIB_DIR / pkg_dir.name
+        for file in pkg_dir.glob('*.pyi'):
+            shutil.copy2(file, dest_pkg / file.name)
+            custom_count += 1
     print(f'Copied {custom_count} custom typeshed files')
 
     return 0

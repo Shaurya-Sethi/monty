@@ -561,6 +561,20 @@ impl<T: ResourceTracker> VM<'_, T> {
                         }
                         tuple.as_slice().iter().map(|v| v.clone_with_heap(this)).collect()
                     }
+                    HeapData::NamedTuple(nt) => {
+                        let nt_len = nt.as_vec().len();
+                        if nt_len != count {
+                            return Err(unpack_size_error(count, nt_len));
+                        }
+                        nt.as_vec().iter().map(|v| v.clone_with_heap(this)).collect()
+                    }
+                    HeapData::Deque(deque) => {
+                        let deque_len = deque.as_deque().len();
+                        if deque_len != count {
+                            return Err(unpack_size_error(count, deque_len));
+                        }
+                        deque.as_deque().iter().map(|v| v.clone_with_heap(this)).collect()
+                    }
                     HeapData::Str(s) => {
                         let str_len = s.as_str().chars().count();
                         if str_len != count {

@@ -290,6 +290,9 @@ impl Type {
         } else if self == Self::DateTime && other == Self::Date {
             // datetime is a subtype of date in Python
             true
+        } else if self == Self::NamedTuple && other == Self::Tuple {
+            // a namedtuple is a subclass of tuple in Python
+            true
         } else {
             false
         }

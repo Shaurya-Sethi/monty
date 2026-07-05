@@ -9,6 +9,17 @@ following names are importable; everything else in CPython's `collections`
 - `deque`
 - `defaultdict`
 - `Counter`
+- `namedtuple`
+
+The type checker uses a Monty-narrowed `collections` stub
+(`crates/monty-typeshed/custom/collections/__init__.pyi`) exposing only these
+members, so referencing an unimplemented member (e.g. `collections.OrderedDict`)
+is a type error as well as a runtime `AttributeError`.
+
+**`collections.abc` is not importable at runtime.** `from collections.abc
+import ...` type-checks (the ABCs are used only as annotations) but raises
+`ModuleNotFoundError` if executed. Use the names only in annotations / under
+`if TYPE_CHECKING:`.
 
 ### General
 
@@ -91,3 +102,20 @@ Divergences from CPython:
   CPython too, but `total()` is missing here).
 - **Counts are integers.** Arithmetic assumes integer counts; non-integer values
   are treated as `0` for count purposes rather than raising.
+
+## `namedtuple`
+
+`collections.namedtuple(typename, field_names, *, rename=False, defaults=None,
+module=None)` builds a callable class producing named-tuple instances. Field
+names may be a whitespace/comma-separated string or an iterable of strings, and
+are validated (identifiers, non-keywords, no leading underscore, no duplicates)
+with CPython-matching `ValueError`s; `rename=True` auto-fixes invalid names to
+`_0`, `_1`, ….
+
+See [namedtuple.md](namedtuple.md) for the full instance surface and
+divergences. The headline divergence: **`type(instance) is TheClass` is
+`False`** and `type(instance).__name__` is `'namedtuple'` — the class object
+carries the correct name/`_fields`/repr, but the runtime type-identity link
+between an instance and its specific class is not established. The `module`
+argument is accepted and ignored (Monty has no per-namedtuple module objects,
+so the class repr is always `<class '__main__.Name'>`).

@@ -904,6 +904,11 @@ impl MontyObject {
                             values,
                         }
                     }
+                    HeapReadOutput::NamedTupleClass(class) => {
+                        // A namedtuple class is an opaque class object at the host
+                        // boundary; represent it by its repr.
+                        Self::Repr(format!("<class '__main__.{}'>", class.get(vm.heap).typename(vm)))
+                    }
                     HeapReadOutput::Deque(deque) => {
                         // Represent a deque to the host as a list of its items —
                         // the wire boundary has no dedicated deque type.

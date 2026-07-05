@@ -19,9 +19,9 @@ use crate::{
     intern::FunctionId,
     types::{
         BoundMethod, Bytes, Class, Dataclass, Deque, Dict, DictItemsView, DictKeysView, DictSubclass, DictSubclassKind,
-        DictValuesView, FrozenSet, Instance, LazyHeapSet, List, LongInt, Module, MontyIter, NamedTuple, OpenFile, Path,
-        PyTrait, Range, ReMatch, RePattern, Set, Slice, Str, Tuple, Type, date, datetime, str::allocate_string,
-        timedelta, timezone,
+        DictValuesView, FrozenSet, Instance, LazyHeapSet, List, LongInt, Module, MontyIter, NamedTuple,
+        NamedTupleClass, OpenFile, Path, PyTrait, Range, ReMatch, RePattern, Set, Slice, Str, Tuple, Type, date,
+        datetime, str::allocate_string, timedelta, timezone,
     },
     value::{EitherStr, Value, eq_bigint, eq_bytes, eq_ext_function, eq_str},
 };
@@ -38,6 +38,8 @@ pub(crate) enum HeapData {
     List(List),
     Tuple(Tuple),
     NamedTuple(NamedTuple),
+    /// A class object produced by `collections.namedtuple(...)`.
+    NamedTupleClass(NamedTupleClass),
     /// A `collections.deque` double-ended queue.
     Deque(Deque),
     Dict(Dict),
@@ -175,6 +177,7 @@ impl HeapData {
             Self::List(_)
                 | Self::Tuple(_)
                 | Self::NamedTuple(_)
+                | Self::NamedTupleClass(_)
                 | Self::Deque(_)
                 | Self::Dict(_)
                 | Self::DictSubclass(_)
@@ -215,6 +218,8 @@ impl HeapData {
             Self::Bytes(_) => Type::Bytes,
             Self::List(_) => Type::List,
             Self::Tuple(_) | Self::NamedTuple(_) => Type::Tuple,
+            // A namedtuple *class* object's type is `type`.
+            Self::NamedTupleClass(_) => Type::Type,
             Self::Deque(_) => Type::Deque,
             Self::Dict(_) => Type::Dict,
             // A dict subclass reports its concrete Python type by kind.
@@ -259,6 +264,7 @@ impl HeapData {
             Self::List(l) => l.py_estimate_size(),
             Self::Tuple(t) => t.py_estimate_size(),
             Self::NamedTuple(nt) => nt.py_estimate_size(),
+            Self::NamedTupleClass(c) => c.py_estimate_size(),
             Self::Deque(dq) => dq.py_estimate_size(),
             Self::Dict(d) => d.py_estimate_size(),
             Self::DictSubclass(sub) => sub.py_estimate_size(),
@@ -477,6 +483,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::List(l) => l.py_bool(vm),
             Self::Tuple(t) => t.py_bool(vm),
             Self::NamedTuple(nt) => nt.py_bool(vm),
+            Self::NamedTupleClass(_) => true,
             Self::Deque(dq) => dq.py_bool(vm),
             Self::Dict(d) => d.py_bool(vm),
             Self::DictSubclass(sub) => sub.py_bool(vm),
@@ -520,7 +527,9 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             HeapReadOutput::Bytes(b) => Ok(b.py_call_attr(self_id, vm, attr, args)?),
             HeapReadOutput::List(list) => Ok(list.py_call_attr(self_id, vm, attr, args)?),
             HeapReadOutput::Tuple(t) => Ok(t.py_call_attr(self_id, vm, attr, args)?),
+            HeapReadOutput::NamedTuple(nt) => Ok(nt.py_call_attr(self_id, vm, attr, args)?),
             HeapReadOutput::Deque(dq) => Ok(dq.py_call_attr(self_id, vm, attr, args)?),
+            HeapReadOutput::NamedTupleClass(c) => Ok(c.py_call_attr(self_id, vm, attr, args)?),
             HeapReadOutput::Dict(dict) => Ok(dict.py_call_attr(self_id, vm, attr, args)?),
             HeapReadOutput::DictSubclass(sub) => Ok(sub.py_call_attr(self_id, vm, attr, args)?),
             HeapReadOutput::DictKeysView(view) => Ok(view.py_call_attr(self_id, vm, attr, args)?),
@@ -598,6 +607,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::List(l) => l.py_type(vm),
             Self::Tuple(t) => t.py_type(vm),
             Self::NamedTuple(nt) => nt.py_type(vm),
+            Self::NamedTupleClass(c) => c.py_type(vm),
             Self::Deque(dq) => dq.py_type(vm),
             Self::Dict(d) => d.py_type(vm),
             Self::DictSubclass(sub) => sub.py_type(vm),
@@ -679,6 +689,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             HeapReadOutput::List(a) => a.py_eq_impl(other, vm),
             HeapReadOutput::Tuple(a) => a.py_eq_impl(other, vm),
             HeapReadOutput::NamedTuple(a) => a.py_eq_impl(other, vm),
+            HeapReadOutput::NamedTupleClass(a) => a.py_eq_impl(other, vm),
             HeapReadOutput::Deque(a) => a.py_eq_impl(other, vm),
             HeapReadOutput::Dict(a) => a.py_eq_impl(other, vm),
             HeapReadOutput::DictSubclass(a) => a.py_eq_impl(other, vm),
@@ -776,6 +787,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::List(l) => l.py_repr_fmt(f, vm, heap_ids),
             Self::Tuple(t) => t.py_repr_fmt(f, vm, heap_ids),
             Self::NamedTuple(nt) => nt.py_repr_fmt(f, vm, heap_ids),
+            Self::NamedTupleClass(c) => c.py_repr_fmt(f, vm, heap_ids),
             Self::Deque(dq) => dq.py_repr_fmt(f, vm, heap_ids),
             Self::Dict(d) => d.py_repr_fmt(f, vm, heap_ids),
             Self::DictSubclass(sub) => sub.py_repr_fmt(f, vm, heap_ids),
@@ -1014,6 +1026,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::List(l) => l.py_getattr(attr, vm),
             Self::Tuple(t) => t.py_getattr(attr, vm),
             Self::NamedTuple(nt) => nt.py_getattr(attr, vm),
+            Self::NamedTupleClass(c) => c.py_getattr(attr, vm),
             Self::Deque(dq) => dq.py_getattr(attr, vm),
             Self::Dict(d) => d.py_getattr(attr, vm),
             Self::DictSubclass(sub) => sub.py_getattr(attr, vm),

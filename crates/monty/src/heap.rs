@@ -20,8 +20,8 @@ use crate::{
     resource::{ResourceError, ResourceTracker},
     types::{
         BoundMethod, Bytes, Class, Dataclass, Deque, Dict, DictItemsView, DictKeysView, DictSubclass, DictSubclassKind,
-        DictValuesView, FrozenSet, Instance, List, LongInt, Module, MontyIter, NamedTuple, OpenFile, Path, Range,
-        ReMatch, RePattern, Set, Slice, Str, TimeZone, Tuple, date, datetime, timedelta, timezone,
+        DictValuesView, FrozenSet, Instance, List, LongInt, Module, MontyIter, NamedTuple, NamedTupleClass, OpenFile,
+        Path, Range, ReMatch, RePattern, Set, Slice, Str, TimeZone, Tuple, date, datetime, timedelta, timezone,
     },
     value::Value,
 };
@@ -207,6 +207,7 @@ pub enum HeapReadOutput<'a> {
     List(HeapRead<'a, List>),
     Tuple(HeapRead<'a, Tuple>),
     NamedTuple(HeapRead<'a, NamedTuple>),
+    NamedTupleClass(HeapRead<'a, NamedTupleClass>),
     Deque(HeapRead<'a, Deque>),
     Dict(HeapRead<'a, Dict>),
     DictSubclass(HeapRead<'a, DictSubclass>),
@@ -594,6 +595,7 @@ impl<'a> HeapPtr<'a> {
             HeapData::List(list) => HeapReadOutput::List(heap_read(base, list, readers)),
             HeapData::Tuple(tuple) => HeapReadOutput::Tuple(heap_read(base, tuple, readers)),
             HeapData::NamedTuple(named_tuple) => HeapReadOutput::NamedTuple(heap_read(base, named_tuple, readers)),
+            HeapData::NamedTupleClass(class) => HeapReadOutput::NamedTupleClass(heap_read(base, class, readers)),
             HeapData::Deque(deque) => HeapReadOutput::Deque(heap_read(base, deque, readers)),
             HeapData::Dict(dict) => HeapReadOutput::Dict(heap_read(base, dict, readers)),
             HeapData::DictSubclass(sub) => HeapReadOutput::DictSubclass(heap_read(base, sub, readers)),
@@ -1461,6 +1463,14 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                 }
             }
         }
+        HeapData::NamedTupleClass(class) => {
+            // The only heap refs a namedtuple class holds are its default values.
+            for value in class.defaults() {
+                if let Value::Ref(id) = value {
+                    on_child(*id);
+                }
+            }
+        }
         HeapData::DictSubclass(sub) => {
             // The backing dict is always a heap ref; the factory may be too.
             on_child(sub.dict_id());
@@ -1672,6 +1682,7 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
         HeapData::List(l) => l.py_dec_ref_ids(stack),
         HeapData::Tuple(t) => t.py_dec_ref_ids(stack),
         HeapData::NamedTuple(nt) => nt.py_dec_ref_ids(stack),
+        HeapData::NamedTupleClass(c) => c.py_dec_ref_ids(stack),
         HeapData::Deque(dq) => dq.py_dec_ref_ids(stack),
         HeapData::Dict(d) => d.py_dec_ref_ids(stack),
         HeapData::DictSubclass(sub) => sub.py_dec_ref_ids(stack),

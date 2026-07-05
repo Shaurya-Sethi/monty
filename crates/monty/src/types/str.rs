@@ -1985,7 +1985,7 @@ struct EncodeArgs {
 /// Returns True if the string is a valid Python identifier according to
 /// the language definition (starts with letter or underscore, followed by
 /// letters, digits, or underscores). Empty strings return False.
-fn str_isidentifier(s: &str) -> bool {
+pub(crate) fn str_isidentifier(s: &str) -> bool {
     if s.is_empty() {
         return false;
     }

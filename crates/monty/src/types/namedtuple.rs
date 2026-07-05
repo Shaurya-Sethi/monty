@@ -25,14 +25,18 @@ use std::{
 
 use super::PyTrait;
 use crate::{
+    args::ArgValues,
     bytecode::{CallResult, ContainsVM, DropWithVM, RecursionToken, VM},
     defer_drop, defer_drop_vm_mut,
-    exception_private::{ExcType, RunResult},
+    exception_private::{ExcType, RunResult, SimpleException},
     hash::HashValue,
-    heap::{HeapId, HeapItem, HeapRead, HeapReadOutput},
-    intern::{Interns, StringId},
+    heap::{DropWithHeap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
+    intern::{Interns, StaticStrings, StringId},
     resource::ResourceTracker,
-    types::{Type, py_trait::LazyHeapSet},
+    types::{
+        Dict, MontyIter, Type, allocate_tuple, py_trait::LazyHeapSet, slice::normalize_sequence_index,
+        str::allocate_string,
+    },
     value::{EitherStr, Value},
 };
 
@@ -376,6 +380,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
     }
 
     fn py_getattr(&self, attr: &EitherStr, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Option<CallResult>> {
+        // `_fields` is the tuple of field names (accessible on instances too).
+        if attr.static_string() == Some(StaticStrings::Fields) {
+            return Ok(Some(CallResult::Value(self.fields_tuple(vm)?)));
+        }
         let attr_name = attr.as_str(vm.interns);
         if let Some(value) = self.get(vm.heap).get_by_name(attr_name, vm.interns) {
             Ok(Some(CallResult::Value(value.clone_with_heap(vm.heap))))
@@ -384,6 +392,180 @@ impl<'h> PyTrait<'h> for HeapRead<'h, NamedTuple> {
             Err(ExcType::attribute_error(self.get(vm.heap).name(vm.interns), attr_name))
         }
     }
+
+    fn py_call_attr(
+        &mut self,
+        _self_id: HeapId,
+        vm: &mut VM<'h, impl ResourceTracker>,
+        attr: &EitherStr,
+        args: ArgValues,
+    ) -> RunResult<CallResult> {
+        match attr.static_string() {
+            Some(StaticStrings::Asdict) => {
+                args.check_zero_args("_asdict", vm.heap)?;
+                Ok(CallResult::Value(self.asdict(vm)?))
+            }
+            Some(StaticStrings::ReplaceMethod) => Ok(CallResult::Value(self.replace(args, vm)?)),
+            Some(StaticStrings::Make) => Ok(CallResult::Value(self.make(args, vm)?)),
+            // Inherited tuple methods.
+            Some(StaticStrings::Count) => Ok(CallResult::Value(self.tuple_count(args, vm)?)),
+            Some(StaticStrings::Index) => Ok(CallResult::Value(self.tuple_index(args, vm)?)),
+            _ => {
+                let name = self.get(vm.heap).name(vm.interns).to_owned();
+                args.drop_with_heap(vm);
+                Err(ExcType::attribute_error(&name, attr.as_str(vm.interns)))
+            }
+        }
+    }
+}
+
+impl<'h> HeapRead<'h, NamedTuple> {
+    /// Builds the `_fields` tuple of field-name strings.
+    fn fields_tuple(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
+        let names: Vec<String> = self
+            .get(vm.heap)
+            .field_names
+            .iter()
+            .map(|f| f.as_str(vm.interns).to_owned())
+            .collect();
+        let mut items = smallvec::SmallVec::<[Value; 3]>::new();
+        for name in names {
+            items.push(allocate_string(name, vm.heap)?);
+        }
+        Ok(allocate_tuple(items, vm.heap)?)
+    }
+
+    /// Implements `_asdict()`, returning an insertion-ordered `dict` of
+    /// field-name → value.
+    fn asdict(&self, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
+        let len = self.get(vm.heap).items.len();
+        let mut pairs = Vec::with_capacity(len);
+        for i in 0..len {
+            let name = self.get(vm.heap).field_names[i].as_str(vm.interns).to_owned();
+            let key = allocate_string(name, vm.heap)?;
+            let value = self.get(vm.heap).items[i].clone_with_heap(vm.heap);
+            pairs.push((key, value));
+        }
+        let dict = Dict::from_pairs(pairs, vm)?;
+        let id = vm.heap.allocate(HeapData::Dict(dict))?;
+        Ok(Value::Ref(id))
+    }
+
+    /// Implements `_replace(**kwargs)`, returning a new named tuple with the
+    /// named fields overridden.
+    fn replace(&self, args: ArgValues, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
+        let (pos, kwargs) = args.into_parts();
+        let pos: Vec<Value> = pos.collect();
+        if !pos.is_empty() {
+            let n = pos.len();
+            pos.drop_with_heap(vm);
+            kwargs.drop_with_heap(vm);
+            return Err(ExcType::type_error_too_many_positional_range(
+                "_replace",
+                1,
+                1,
+                n + 1,
+                0,
+            ));
+        }
+        // Start from a clone of the current items, then override by field name.
+        let len = self.get(vm.heap).items.len();
+        let mut items: Vec<Value> = (0..len)
+            .map(|i| self.get(vm.heap).items[i].clone_with_heap(vm.heap))
+            .collect();
+        for (key, value) in kwargs {
+            let key_str = key.to_str(vm).map(str::to_owned).unwrap_or_default();
+            let position = self
+                .get(vm.heap)
+                .field_names
+                .iter()
+                .position(|f| f.as_str(vm.interns) == key_str);
+            if let Some(idx) = position {
+                let old = mem::replace(&mut items[idx], value);
+                old.drop_with_heap(vm);
+            } else {
+                value.drop_with_heap(vm);
+                items.drop_with_heap(vm);
+                return Err(SimpleException::new_msg(
+                    ExcType::ValueError,
+                    format!("Got unexpected field names: [{}]", py_repr_str(&key_str)),
+                )
+                .into());
+            }
+        }
+        let name = self.get(vm.heap).name.clone();
+        let field_names = self.get(vm.heap).field_names.clone();
+        let nt = NamedTuple::new(name, field_names, items);
+        let id = vm.heap.allocate(HeapData::NamedTuple(nt))?;
+        Ok(Value::Ref(id))
+    }
+
+    /// Implements the inherited `tuple.index(value[, start[, stop]])` method.
+    fn tuple_index(&self, args: ArgValues, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
+        let pos_args = args.into_pos_only("tuple.index", vm.heap)?;
+        defer_drop!(pos_args, vm);
+        let len = self.get(vm.heap).items.len();
+        let (value, start, end) = match pos_args.as_slice() {
+            [] => return Err(ExcType::type_error_at_least("tuple.index", 1, 0)),
+            [value] => (value, 0, len),
+            [value, start_arg] => (value, normalize_sequence_index(start_arg.as_int(vm)?, len), len),
+            [value, start_arg, end_arg] => {
+                let start = normalize_sequence_index(start_arg.as_int(vm)?, len);
+                let end = normalize_sequence_index(end_arg.as_int(vm)?, len).max(start);
+                (value, start, end)
+            }
+            other => return Err(ExcType::type_error_at_most("tuple.index", 3, other.len())),
+        };
+        let iter = self.iter(vm)?;
+        defer_drop_vm_mut!(iter, vm);
+        while let Some((idx, item)) = iter.next_with_index(vm)? {
+            if idx >= end {
+                break;
+            }
+            if idx >= start && value.py_eq(item, vm)? {
+                return Ok(Value::Int(i64::try_from(idx).expect("index exceeds i64::MAX")));
+            }
+        }
+        Err(ExcType::value_error_not_in_tuple())
+    }
+
+    /// Implements the inherited `tuple.count(value)` method.
+    fn tuple_count(&self, args: ArgValues, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
+        let value = args.get_one_arg("tuple.count", vm.heap)?;
+        defer_drop!(value, vm);
+        let mut count = 0usize;
+        let iter = self.iter(vm)?;
+        defer_drop_vm_mut!(iter, vm);
+        while let Some(item) = iter.next(vm)? {
+            if value.py_eq(item, vm)? {
+                count += 1;
+            }
+        }
+        Ok(Value::Int(i64::try_from(count).expect("count exceeds i64::MAX")))
+    }
+
+    /// Implements `_make(iterable)`, building a new instance (with the same
+    /// name/fields) from an iterable of exactly `len(_fields)` items.
+    fn make(&self, args: ArgValues, vm: &mut VM<'h, impl ResourceTracker>) -> RunResult<Value> {
+        let iterable = args.get_one_arg("_make", vm.heap)?;
+        let items: Vec<Value> = MontyIter::new(iterable, vm)?.collect(vm)?;
+        let expected = self.get(vm.heap).field_names.len();
+        if items.len() != expected {
+            let got = items.len();
+            items.drop_with_heap(vm);
+            return Err(ExcType::type_error(format!("Expected {expected} arguments, got {got}")));
+        }
+        let name = self.get(vm.heap).name.clone();
+        let field_names = self.get(vm.heap).field_names.clone();
+        let nt = NamedTuple::new(name, field_names, items);
+        let id = vm.heap.allocate(HeapData::NamedTuple(nt))?;
+        Ok(Value::Ref(id))
+    }
+}
+
+/// Renders a Python `repr()` of a string (single-quoted) for error messages.
+fn py_repr_str(s: &str) -> String {
+    format!("'{s}'")
 }
 
 impl HeapItem for NamedTuple {
