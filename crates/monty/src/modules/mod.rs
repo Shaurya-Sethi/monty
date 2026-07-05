@@ -17,6 +17,7 @@ use crate::{
 };
 
 pub(crate) mod asyncio;
+pub(crate) mod collections;
 pub(crate) mod datetime;
 #[cfg(feature = "test-hooks")]
 pub(crate) mod gc;
@@ -53,6 +54,9 @@ pub(crate) enum StandardLib {
     Datetime,
     /// The `unicodedata` module providing Unicode Character Database access.
     Unicodedata,
+    /// The `collections` module providing specialized container datatypes
+    /// (`deque`, `defaultdict`, `Counter`, `namedtuple`).
+    Collections,
     /// The `gc` module exposing a single `collect()` for tests. Only present
     /// under the `test-hooks` feature so production sandboxes never see it.
     ///
@@ -78,6 +82,7 @@ impl StandardLib {
             StaticStrings::Re => Some(Self::Re),
             StaticStrings::Datetime => Some(Self::Datetime),
             StaticStrings::Unicodedata => Some(Self::Unicodedata),
+            StaticStrings::Collections => Some(Self::Collections),
             #[cfg(feature = "test-hooks")]
             StaticStrings::Gc => Some(Self::Gc),
             _ => None,
@@ -103,6 +108,7 @@ impl StandardLib {
             Self::Re => re::create_module(vm),
             Self::Datetime => datetime::create_module(vm),
             Self::Unicodedata => unicodedata::create_module(vm),
+            Self::Collections => collections::create_module(vm),
             #[cfg(feature = "test-hooks")]
             Self::Gc => gc::create_module(vm),
         }

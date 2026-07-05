@@ -756,6 +756,58 @@ pub enum StaticStrings {
     FalseRepr,
     #[strum(serialize = "Ellipsis")]
     EllipsisRepr,
+
+    // ==========================
+    // collections module strings. Appended at the enum end: StaticStrings
+    // discriminants are serialized `StringId`s, so mid-enum insertion would
+    // shift every later id.
+    /// Module name for `import collections`.
+    Collections,
+    /// `collections.deque` type.
+    Deque,
+    /// `collections.defaultdict` type.
+    Defaultdict,
+    /// `collections.Counter` type.
+    #[strum(serialize = "Counter")]
+    Counter,
+    /// `collections.namedtuple` factory function.
+    Namedtuple,
+    /// `deque.appendleft()` method.
+    Appendleft,
+    /// `deque.popleft()` method.
+    Popleft,
+    /// `deque.extendleft()` method.
+    Extendleft,
+    /// `deque.rotate()` method.
+    Rotate,
+    /// `deque.maxlen` attribute and constructor kwarg.
+    Maxlen,
+    /// `Counter.most_common()` method.
+    MostCommon,
+    /// `Counter.elements()` method.
+    Elements,
+    /// `Counter.subtract()` method.
+    Subtract,
+    /// `defaultdict.default_factory` attribute.
+    DefaultFactory,
+    /// `namedtuple` class `_fields` attribute.
+    #[strum(serialize = "_fields")]
+    Fields,
+    /// `namedtuple` class `_make()` classmethod.
+    #[strum(serialize = "_make")]
+    Make,
+    /// `namedtuple` instance `_asdict()` method.
+    #[strum(serialize = "_asdict")]
+    Asdict,
+    /// `namedtuple` instance `_replace()` method.
+    #[strum(serialize = "_replace")]
+    ReplaceMethod,
+    /// `namedtuple` class `_field_defaults` attribute.
+    #[strum(serialize = "_field_defaults")]
+    FieldDefaults,
+    /// `namedtuple(defaults=...)` keyword argument. (`rename` reuses the
+    /// existing `Rename` variant.)
+    Defaults,
 }
 
 impl StaticStrings {

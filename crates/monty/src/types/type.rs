@@ -11,7 +11,7 @@ use crate::{
     intern::{Interns, StaticStrings, StringId},
     resource::ResourceTracker,
     types::{
-        AttrCallResult, Bytes, Dict, FrozenSet, List, LongInt, MontyIter, Path, PyTrait, Range, Set, Slice, Str,
+        AttrCallResult, Bytes, Deque, Dict, FrozenSet, List, LongInt, MontyIter, Path, PyTrait, Range, Set, Slice, Str,
         TimeZone, Tuple, bytes::bytes_fromhex, date, datetime, dict::dict_fromkeys, instance::class_name,
         long_int::INT_MAX_STR_DIGITS, str::StringRepr, timedelta,
     },
@@ -61,6 +61,9 @@ pub enum Type {
     List,
     Tuple,
     NamedTuple,
+    /// `collections.deque` — a double-ended queue. Only reachable via import.
+    #[strum(serialize = "collections.deque")]
+    Deque,
     Dict,
     #[strum(serialize = "dict_keys")]
     DictKeys,
@@ -375,6 +378,7 @@ impl Type {
             // Container types - delegate to init methods
             Self::List => List::init(vm, args),
             Self::Tuple => Tuple::init(vm, args),
+            Self::Deque => Deque::init(vm, args),
             Self::Dict => Dict::init(vm, args),
             Self::Set => Set::init(vm, args),
             Self::FrozenSet => FrozenSet::init(vm, args),

@@ -9,6 +9,7 @@ and no way for sandboxed code to load additional modules.
 | Module     | See                                  |
 | ---------- | ------------------------------------ |
 | `asyncio`  | [asyncio.md](asyncio.md)             |
+| `collections` | [collections.md](collections.md)  |
 | `datetime` | [datetime.md](datetime.md)           |
 | `json`     | [json.md](json.md)                   |
 | `math`     | [math.md](math.md)                   |
@@ -25,9 +26,7 @@ suite; production sandboxes never see it.
 ## Notable modules NOT available
 
 Common modules that are *not* importable in Monty (non-exhaustive):
-`abc`, `argparse`, `array`, `base64`, `bisect`, `collections` (no
-`defaultdict`, `Counter`, `OrderedDict`, `deque`; `namedtuple` is exposed
-as a builtin, not via `collections`), `contextlib`, `copy`, `csv`,
+`abc`, `argparse`, `array`, `base64`, `bisect`, `contextlib`, `copy`, `csv`,
 `ctypes`, `dataclasses` (the `@dataclass` decorator is built in; the
 module is not importable), `decimal`, `enum`, `fractions`, `functools`,
 `hashlib`, `heapq`, `hmac`, `http`, `inspect`, `io`, `itertools`,
@@ -38,5 +37,6 @@ module is not importable), `decimal`, `enum`, `fractions`, `functools`,
 
 Many of these are deliberately excluded (`socket`, `subprocess`,
 `multiprocessing`, `threading`, `ctypes`) because they would breach the
-sandbox. Others (`itertools`, `functools`, `collections`, `enum`) are
-simply unimplemented; they may appear over time.
+sandbox. Others (`itertools`, `functools`, `enum`) are simply
+unimplemented; they may appear over time. `collections` is available but
+only implements a subset — see [collections.md](collections.md).

@@ -424,6 +424,18 @@ fn get_heap_item(
         }
         HeapData::Tuple(tuple) => Ok(Some(tuple.as_slice()[index].clone_with_heap(vm))),
         HeapData::NamedTuple(namedtuple) => Ok(Some(namedtuple.as_vec()[index].clone_with_heap(vm))),
+        HeapData::Deque(deque) => {
+            // Check for deque mutation during iteration (matches CPython)
+            if let Some(expected) = expected_len
+                && deque.as_deque().len() != expected
+            {
+                return Err(ExcType::runtime_error_deque_changed_size());
+            }
+            match deque.as_deque().get(index) {
+                Some(item) => Ok(Some(item.clone_with_heap(vm))),
+                None => Ok(None),
+            }
+        }
         HeapData::Dict(dict) => {
             // Check for dict mutation
             if let Some(expected) = expected_len
@@ -648,6 +660,12 @@ impl IterValue {
                 heap_id,
                 len: Some(namedtuple.len()),
                 checks_mutation: false,
+            }),
+            // Deque: captured len, WITH mutation check (like dict/set)
+            HeapData::Deque(deque) => Some(Self::HeapRef {
+                heap_id,
+                len: Some(deque.as_deque().len()),
+                checks_mutation: true,
             }),
             HeapData::Bytes(b) => Some(Self::HeapRef {
                 heap_id,

@@ -360,6 +360,7 @@ pub enum MontyType {
     List,
     Tuple,
     NamedTuple,
+    Deque,
     Dict,
     DictKeys,
     DictItems,
@@ -449,6 +450,7 @@ impl MontyType {
             Self::List => Some(Type::List),
             Self::Tuple => Some(Type::Tuple),
             Self::NamedTuple => Some(Type::NamedTuple),
+            Self::Deque => Some(Type::Deque),
             Self::Dict => Some(Type::Dict),
             Self::DictKeys => Some(Type::DictKeys),
             Self::DictItems => Some(Type::DictItems),
@@ -502,6 +504,7 @@ impl MontyType {
             Type::List => Self::List,
             Type::Tuple => Self::Tuple,
             Type::NamedTuple => Self::NamedTuple,
+            Type::Deque => Self::Deque,
             Type::Dict => Self::Dict,
             Type::DictKeys => Self::DictKeys,
             Type::DictItems => Self::DictItems,
@@ -842,6 +845,7 @@ impl MontyObject {
                     return match vm.heap.get(*id) {
                         HeapData::List(_) => Self::Cycle(id.index(), "[...]".to_owned()),
                         HeapData::Tuple(_) | HeapData::NamedTuple(_) => Self::Cycle(id.index(), "(...)".to_owned()),
+                        HeapData::Deque(_) => Self::Cycle(id.index(), "deque([...])".to_owned()),
                         HeapData::Dict(_) => Self::Cycle(id.index(), "{...}".to_owned()),
                         _ => Self::Cycle(id.index(), "...".to_owned()),
                     };
@@ -893,6 +897,18 @@ impl MontyObject {
                             field_names,
                             values,
                         }
+                    }
+                    HeapReadOutput::Deque(deque) => {
+                        // Represent a deque to the host as a list of its items —
+                        // the wire boundary has no dedicated deque type.
+                        let len = deque.get(vm.heap).as_deque().len();
+                        let mut items = Vec::with_capacity(len);
+                        for i in 0..len {
+                            let item = deque.get(vm.heap).as_deque()[i].clone_with_heap(vm.heap);
+                            defer_drop!(item, vm);
+                            items.push(Self::from_value_inner(item, vm, visited));
+                        }
+                        Self::List(items)
                     }
                     HeapReadOutput::Dict(dict) => {
                         let len = dict.get(vm.heap).len();

@@ -19,9 +19,9 @@ use crate::{
     heap_data::{CellValue, Closure, FunctionDefaults},
     resource::{ResourceError, ResourceTracker},
     types::{
-        BoundMethod, Bytes, Class, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, Instance,
-        List, LongInt, Module, MontyIter, NamedTuple, OpenFile, Path, Range, ReMatch, RePattern, Set, Slice, Str,
-        TimeZone, Tuple, date, datetime, timedelta, timezone,
+        BoundMethod, Bytes, Class, Dataclass, Deque, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet,
+        Instance, List, LongInt, Module, MontyIter, NamedTuple, OpenFile, Path, Range, ReMatch, RePattern, Set, Slice,
+        Str, TimeZone, Tuple, date, datetime, timedelta, timezone,
     },
     value::Value,
 };
@@ -207,6 +207,7 @@ pub enum HeapReadOutput<'a> {
     List(HeapRead<'a, List>),
     Tuple(HeapRead<'a, Tuple>),
     NamedTuple(HeapRead<'a, NamedTuple>),
+    Deque(HeapRead<'a, Deque>),
     Dict(HeapRead<'a, Dict>),
     DictItemsView(HeapRead<'a, DictItemsView>),
     DictKeysView(HeapRead<'a, DictKeysView>),
@@ -592,6 +593,7 @@ impl<'a> HeapPtr<'a> {
             HeapData::List(list) => HeapReadOutput::List(heap_read(base, list, readers)),
             HeapData::Tuple(tuple) => HeapReadOutput::Tuple(heap_read(base, tuple, readers)),
             HeapData::NamedTuple(named_tuple) => HeapReadOutput::NamedTuple(heap_read(base, named_tuple, readers)),
+            HeapData::Deque(deque) => HeapReadOutput::Deque(heap_read(base, deque, readers)),
             HeapData::Dict(dict) => HeapReadOutput::Dict(heap_read(base, dict, readers)),
             HeapData::DictItemsView(v) => HeapReadOutput::DictItemsView(heap_read(base, v, readers)),
             HeapData::DictKeysView(v) => HeapReadOutput::DictKeysView(heap_read(base, v, readers)),
@@ -1446,6 +1448,17 @@ fn for_each_child_id<F: FnMut(HeapId)>(data: &HeapData, mut on_child: F) {
                 }
             }
         }
+        HeapData::Deque(deque) => {
+            // Skip iteration if no refs - GC optimization for deques of primitives
+            if !deque.contains_refs() {
+                return;
+            }
+            for value in deque.as_deque() {
+                if let Value::Ref(id) = value {
+                    on_child(*id);
+                }
+            }
+        }
         HeapData::Dict(dict) => {
             // Skip iteration if no refs - major GC optimization for dicts of primitives
             if !dict.has_refs() {
@@ -1647,6 +1660,7 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
         HeapData::List(l) => l.py_dec_ref_ids(stack),
         HeapData::Tuple(t) => t.py_dec_ref_ids(stack),
         HeapData::NamedTuple(nt) => nt.py_dec_ref_ids(stack),
+        HeapData::Deque(dq) => dq.py_dec_ref_ids(stack),
         HeapData::Dict(d) => d.py_dec_ref_ids(stack),
         HeapData::DictKeysView(view) => view.py_dec_ref_ids(stack),
         HeapData::DictItemsView(view) => view.py_dec_ref_ids(stack),

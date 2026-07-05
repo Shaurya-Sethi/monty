@@ -1103,6 +1103,14 @@ impl ExcType {
         SimpleException::new_msg(Self::RuntimeError, "Set changed size during iteration").into()
     }
 
+    /// Creates a RuntimeError for deque mutation during iteration.
+    ///
+    /// Matches CPython's format: `RuntimeError: deque mutated during iteration`
+    #[must_use]
+    pub(crate) fn runtime_error_deque_changed_size() -> RunError {
+        SimpleException::new_msg(Self::RuntimeError, "deque mutated during iteration").into()
+    }
+
     /// Creates a TypeError for functions that don't accept keyword arguments.
     ///
     /// Matches CPython's format: `TypeError: {name}() takes no keyword arguments`

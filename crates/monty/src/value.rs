@@ -265,6 +265,7 @@ impl<'h> PyTrait<'h> for Value {
                 }
                 (HeapReadOutput::Tuple(a), HeapReadOutput::Tuple(b)) => a.py_cmp(&b, vm),
                 (HeapReadOutput::List(a), HeapReadOutput::List(b)) => a.py_cmp(&b, vm),
+                (HeapReadOutput::Deque(a), HeapReadOutput::Deque(b)) => a.py_cmp(&b, vm),
                 (HeapReadOutput::Date(a), HeapReadOutput::Date(b)) => {
                     Ok(CmpOrder::from_total(a.get(vm.heap).partial_cmp(b.get(vm.heap))))
                 }
@@ -1707,6 +1708,18 @@ impl Value {
                         let len = tuple.get(vm.heap).as_slice().len();
                         for i in 0..len {
                             let el = tuple.clone_item(i, vm);
+                            let eq = item.py_eq(&el, vm);
+                            el.drop_with_heap(vm);
+                            if eq? {
+                                return Ok(true);
+                            }
+                        }
+                        Ok(false)
+                    }
+                    HeapReadOutput::Deque(deque) => {
+                        let len = deque.get(vm.heap).as_deque().len();
+                        for i in 0..len {
+                            let el = deque.clone_item(i, vm);
                             let eq = item.py_eq(&el, vm);
                             el.drop_with_heap(vm);
                             if eq? {
