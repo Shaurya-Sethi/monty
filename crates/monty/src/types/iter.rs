@@ -667,6 +667,20 @@ impl IterValue {
                 len: Some(deque.as_deque().len()),
                 checks_mutation: true,
             }),
+            // Dict subclass (defaultdict/Counter): iterate the backing dict's
+            // keys by pointing the iterator directly at the backing dict id.
+            HeapData::DictSubclass(sub) => {
+                let dict_id = sub.dict_id();
+                let len = match heap.get(dict_id) {
+                    HeapData::Dict(dict) => dict.len(),
+                    _ => 0,
+                };
+                Some(Self::HeapRef {
+                    heap_id: dict_id,
+                    len: Some(len),
+                    checks_mutation: true,
+                })
+            }
             HeapData::Bytes(b) => Some(Self::HeapRef {
                 heap_id,
                 len: Some(b.len()),

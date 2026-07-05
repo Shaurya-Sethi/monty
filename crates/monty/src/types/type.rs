@@ -11,9 +11,9 @@ use crate::{
     intern::{Interns, StaticStrings, StringId},
     resource::ResourceTracker,
     types::{
-        AttrCallResult, Bytes, Deque, Dict, FrozenSet, List, LongInt, MontyIter, Path, PyTrait, Range, Set, Slice, Str,
-        TimeZone, Tuple, bytes::bytes_fromhex, date, datetime, dict::dict_fromkeys, instance::class_name,
-        long_int::INT_MAX_STR_DIGITS, str::StringRepr, timedelta,
+        AttrCallResult, Bytes, Deque, Dict, DictSubclass, FrozenSet, List, LongInt, MontyIter, Path, PyTrait, Range,
+        Set, Slice, Str, TimeZone, Tuple, bytes::bytes_fromhex, date, datetime, dict::dict_fromkeys,
+        instance::class_name, long_int::INT_MAX_STR_DIGITS, str::StringRepr, timedelta,
     },
     value::Value,
 };
@@ -64,6 +64,12 @@ pub enum Type {
     /// `collections.deque` — a double-ended queue. Only reachable via import.
     #[strum(serialize = "collections.deque")]
     Deque,
+    /// `collections.defaultdict` — a dict subclass with a default factory.
+    #[strum(serialize = "collections.defaultdict")]
+    DefaultDict,
+    /// `collections.Counter` — a dict subclass for counting.
+    #[strum(serialize = "collections.Counter")]
+    Counter,
     Dict,
     #[strum(serialize = "dict_keys")]
     DictKeys,
@@ -379,6 +385,8 @@ impl Type {
             Self::List => List::init(vm, args),
             Self::Tuple => Tuple::init(vm, args),
             Self::Deque => Deque::init(vm, args),
+            Self::DefaultDict => DictSubclass::init_defaultdict(vm, args),
+            Self::Counter => DictSubclass::init_counter(vm, args),
             Self::Dict => Dict::init(vm, args),
             Self::Set => Set::init(vm, args),
             Self::FrozenSet => FrozenSet::init(vm, args),

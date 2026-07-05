@@ -7,9 +7,19 @@ following names are importable; everything else in CPython's `collections`
 (the custom stub only exposes the implemented names) and at runtime:
 
 - `deque`
+- `defaultdict`
+- `Counter`
 
-The dict-like members (`defaultdict`, `Counter`) and `namedtuple` are
-documented in their own sections below as they land.
+### General
+
+- **`type(obj).__name__` returns the qualified name.** For all three types
+  `type(x).__name__` is `"collections.defaultdict"` / `"collections.Counter"` /
+  `"collections.deque"` rather than the bare `"defaultdict"` / `"Counter"` /
+  `"deque"`. This is a pre-existing Monty behavior for qualified builtin types
+  (e.g. `datetime.datetime.__name__` is likewise qualified). `str(type(x))`
+  (`<class 'collections.defaultdict'>`) matches CPython.
+- **No subclassing** of these types, and no `copy.copy` / `pickle` support (the
+  `copy` and `pickle` modules are not importable); use the `.copy()` method.
 
 ## `deque`
 
@@ -38,3 +48,46 @@ Divergences from CPython:
 - **`maxlen` argument coercion.** A non-integer `maxlen` is reported by the
   constructor body; a `maxlen` that overflows the platform integer range is not
   specially handled.
+
+## `defaultdict`
+
+Supported: `default_factory` (attribute), missing-key insertion via the factory,
+construction from a mapping/iterable plus keyword arguments, all standard `dict`
+methods (`get`, `keys`, `values`, `items`, `pop`, `popitem`, `setdefault`,
+`update`, `clear`, `copy`), iteration, membership, equality with plain dicts,
+`repr`, and `bool`.
+
+Divergences from CPython:
+
+- **`default_factory` must be a builtin callable.** On a missing key the factory
+  is only invoked for builtin callables (`int`, `list`, `set`, `dict`, `tuple`,
+  `str`, `float`, `bool`, `frozenset`, …). A **user-defined** factory (a `lambda`
+  or `def` function) constructs fine but raises
+  `TypeError: defaultdict with a non-builtin default_factory is not supported in
+  Monty` on the missing-key access. This is because `__getitem__` cannot invoke a
+  Python callback that needs its own VM frame. `.get()`, explicit assignment, and
+  iteration are unaffected.
+- **`default_factory` is not reassignable** after construction (`dd.default_factory
+  = f` is unsupported).
+
+## `Counter`
+
+Supported: construction from an iterable (tallying), a mapping, or keyword
+arguments; `c[missing]` returning `0` without inserting; `most_common([n])`;
+`elements()`; `update()`; `subtract()`; the arithmetic operators `+`, `-`, `&`,
+`|` (each dropping non-positive results); all standard `dict` methods; iteration;
+equality with plain dicts; count-descending `repr`; and `bool`.
+
+Divergences from CPython:
+
+- **`elements()` returns a `list`, not a lazy iterator.** CPython returns an
+  `itertools.chain` object; Monty materializes a `list`. Iterating or calling
+  `list(...)` on the result is identical, but `type(c.elements())` differs.
+- **No in-place operators** `+=`, `-=`, `&=`, `|=` between two Counters (the
+  binary forms are supported; use `.update()` / `.subtract()` for in-place count
+  changes).
+- **No unary `+c` / `-c`** (which in CPython keep positive / negative counts).
+- **`total()`, `fromkeys`** are not implemented (`Counter.fromkeys` raises in
+  CPython too, but `total()` is missing here).
+- **Counts are integers.** Arithmetic assumes integer counts; non-integer values
+  are treated as `0` for count purposes rather than raising.

@@ -18,9 +18,10 @@ use crate::{
     heap::{DropWithHeap, HeapId, HeapItem, HeapReadOutput},
     intern::FunctionId,
     types::{
-        BoundMethod, Bytes, Class, Dataclass, Deque, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet,
-        Instance, LazyHeapSet, List, LongInt, Module, MontyIter, NamedTuple, OpenFile, Path, PyTrait, Range, ReMatch,
-        RePattern, Set, Slice, Str, Tuple, Type, date, datetime, str::allocate_string, timedelta, timezone,
+        BoundMethod, Bytes, Class, Dataclass, Deque, Dict, DictItemsView, DictKeysView, DictSubclass, DictSubclassKind,
+        DictValuesView, FrozenSet, Instance, LazyHeapSet, List, LongInt, Module, MontyIter, NamedTuple, OpenFile, Path,
+        PyTrait, Range, ReMatch, RePattern, Set, Slice, Str, Tuple, Type, date, datetime, str::allocate_string,
+        timedelta, timezone,
     },
     value::{EitherStr, Value, eq_bigint, eq_bytes, eq_ext_function, eq_str},
 };
@@ -40,6 +41,9 @@ pub(crate) enum HeapData {
     /// A `collections.deque` double-ended queue.
     Deque(Deque),
     Dict(Dict),
+    /// A `dict` subclass — `collections.defaultdict` or `collections.Counter`.
+    /// Wraps a backing `Dict` (referenced by id) plus per-kind state.
+    DictSubclass(DictSubclass),
     DictKeysView(DictKeysView),
     DictItemsView(DictItemsView),
     DictValuesView(DictValuesView),
@@ -173,6 +177,7 @@ impl HeapData {
                 | Self::NamedTuple(_)
                 | Self::Deque(_)
                 | Self::Dict(_)
+                | Self::DictSubclass(_)
                 | Self::DictKeysView(_)
                 | Self::DictItemsView(_)
                 | Self::DictValuesView(_)
@@ -212,6 +217,11 @@ impl HeapData {
             Self::Tuple(_) | Self::NamedTuple(_) => Type::Tuple,
             Self::Deque(_) => Type::Deque,
             Self::Dict(_) => Type::Dict,
+            // A dict subclass reports its concrete Python type by kind.
+            Self::DictSubclass(sub) => match sub.kind() {
+                DictSubclassKind::DefaultDict { .. } => Type::DefaultDict,
+                DictSubclassKind::Counter => Type::Counter,
+            },
             Self::DictKeysView(_) => Type::DictKeys,
             Self::DictItemsView(_) => Type::DictItems,
             Self::DictValuesView(_) => Type::DictValues,
@@ -251,6 +261,7 @@ impl HeapData {
             Self::NamedTuple(nt) => nt.py_estimate_size(),
             Self::Deque(dq) => dq.py_estimate_size(),
             Self::Dict(d) => d.py_estimate_size(),
+            Self::DictSubclass(sub) => sub.py_estimate_size(),
             Self::DictKeysView(view) => view.py_estimate_size(),
             Self::DictItemsView(view) => view.py_estimate_size(),
             Self::DictValuesView(view) => view.py_estimate_size(),
@@ -468,6 +479,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::NamedTuple(nt) => nt.py_bool(vm),
             Self::Deque(dq) => dq.py_bool(vm),
             Self::Dict(d) => d.py_bool(vm),
+            Self::DictSubclass(sub) => sub.py_bool(vm),
             Self::DictKeysView(view) => view.py_bool(vm),
             Self::DictItemsView(view) => view.py_bool(vm),
             Self::DictValuesView(view) => view.py_bool(vm),
@@ -510,6 +522,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             HeapReadOutput::Tuple(t) => Ok(t.py_call_attr(self_id, vm, attr, args)?),
             HeapReadOutput::Deque(dq) => Ok(dq.py_call_attr(self_id, vm, attr, args)?),
             HeapReadOutput::Dict(dict) => Ok(dict.py_call_attr(self_id, vm, attr, args)?),
+            HeapReadOutput::DictSubclass(sub) => Ok(sub.py_call_attr(self_id, vm, attr, args)?),
             HeapReadOutput::DictKeysView(view) => Ok(view.py_call_attr(self_id, vm, attr, args)?),
             HeapReadOutput::DictItemsView(view) => Ok(view.py_call_attr(self_id, vm, attr, args)?),
             HeapReadOutput::DictValuesView(view) => Ok(view.py_call_attr(self_id, vm, attr, args)?),
@@ -587,6 +600,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::NamedTuple(nt) => nt.py_type(vm),
             Self::Deque(dq) => dq.py_type(vm),
             Self::Dict(d) => d.py_type(vm),
+            Self::DictSubclass(sub) => sub.py_type(vm),
             Self::DictKeysView(v) => v.py_type(vm),
             Self::DictItemsView(v) => v.py_type(vm),
             Self::DictValuesView(v) => v.py_type(vm),
@@ -625,6 +639,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::NamedTuple(nt) => nt.py_len(vm),
             Self::Deque(dq) => dq.py_len(vm),
             Self::Dict(d) => d.py_len(vm),
+            Self::DictSubclass(sub) => sub.py_len(vm),
             Self::DictKeysView(view) => view.py_len(vm),
             Self::DictItemsView(view) => view.py_len(vm),
             Self::DictValuesView(view) => view.py_len(vm),
@@ -666,6 +681,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             HeapReadOutput::NamedTuple(a) => a.py_eq_impl(other, vm),
             HeapReadOutput::Deque(a) => a.py_eq_impl(other, vm),
             HeapReadOutput::Dict(a) => a.py_eq_impl(other, vm),
+            HeapReadOutput::DictSubclass(a) => a.py_eq_impl(other, vm),
             HeapReadOutput::Set(a) => a.py_eq_impl(other, vm),
             HeapReadOutput::FrozenSet(a) => a.py_eq_impl(other, vm),
             HeapReadOutput::DictKeysView(a) => a.py_eq_impl(other, vm),
@@ -762,6 +778,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::NamedTuple(nt) => nt.py_repr_fmt(f, vm, heap_ids),
             Self::Deque(dq) => dq.py_repr_fmt(f, vm, heap_ids),
             Self::Dict(d) => d.py_repr_fmt(f, vm, heap_ids),
+            Self::DictSubclass(sub) => sub.py_repr_fmt(f, vm, heap_ids),
             Self::DictKeysView(view) => view.py_repr_fmt(f, vm, heap_ids),
             Self::DictItemsView(view) => view.py_repr_fmt(f, vm, heap_ids),
             Self::DictValuesView(view) => view.py_repr_fmt(f, vm, heap_ids),
@@ -967,6 +984,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::NamedTuple(nt) => nt.py_getitem(key, vm),
             Self::Deque(dq) => dq.py_getitem(key, vm),
             Self::Dict(d) => d.py_getitem(key, vm),
+            Self::DictSubclass(sub) => sub.py_getitem(key, vm),
             Self::Range(r) => r.py_getitem(key, vm),
             Self::ReMatch(m) => m.py_getitem(key, vm),
             _ => Err(ExcType::type_error_not_sub(&self.py_type(vm).name(vm.heap, vm.interns))),
@@ -978,6 +996,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::List(l) => l.py_setitem(key, value, vm),
             Self::Deque(dq) => dq.py_setitem(key, value, vm),
             Self::Dict(d) => d.py_setitem(key, value, vm),
+            Self::DictSubclass(sub) => sub.py_setitem(key, value, vm),
             _ => {
                 key.drop_with_heap(vm);
                 value.drop_with_heap(vm);
@@ -997,6 +1016,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
             Self::NamedTuple(nt) => nt.py_getattr(attr, vm),
             Self::Deque(dq) => dq.py_getattr(attr, vm),
             Self::Dict(d) => d.py_getattr(attr, vm),
+            Self::DictSubclass(sub) => sub.py_getattr(attr, vm),
             Self::DictKeysView(view) => view.py_getattr(attr, vm),
             Self::DictItemsView(view) => view.py_getattr(attr, vm),
             Self::DictValuesView(view) => view.py_getattr(attr, vm),

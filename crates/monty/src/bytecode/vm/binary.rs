@@ -3,10 +3,15 @@
 use super::VM;
 use crate::{
     defer_drop,
-    exception_private::{ExcType, RunError},
+    exception_private::{ExcType, RunError, RunResult},
     heap::{HeapData, HeapGuard, HeapReadOutput},
     resource::ResourceTracker,
-    types::{PyTrait, Set, dict_view::collect_iterable_to_set, set::SetBinaryOp},
+    types::{
+        PyTrait, Set,
+        dict_subclass::{CounterOp, counter_binop},
+        dict_view::collect_iterable_to_set,
+        set::SetBinaryOp,
+    },
     value::{BitwiseOp, Value},
 };
 
@@ -22,6 +27,11 @@ impl<T: ResourceTracker> VM<'_, T> {
         defer_drop!(rhs, this);
         let lhs = this.pop();
         defer_drop!(lhs, this);
+
+        if let Some(result) = this.try_counter_binop(lhs, rhs, CounterOp::Add)? {
+            this.push(result);
+            return Ok(());
+        }
 
         match lhs.py_add(rhs, this) {
             Ok(Some(v)) => {
@@ -55,6 +65,11 @@ impl<T: ResourceTracker> VM<'_, T> {
         defer_drop!(rhs, this);
         let lhs = this.pop();
         defer_drop!(lhs, this);
+
+        if let Some(result) = this.try_counter_binop(lhs, rhs, CounterOp::Sub)? {
+            this.push(result);
+            return Ok(());
+        }
 
         if let Some(result) = this.binary_dict_view_op(lhs, rhs, DictViewBinaryOp::Sub)? {
             this.push(result);
@@ -283,6 +298,11 @@ impl<T: ResourceTracker> VM<'_, T> {
         let lhs = this.pop();
         defer_drop!(lhs, this);
 
+        if let Some(result) = this.try_counter_binop(lhs, rhs, CounterOp::And)? {
+            this.push(result);
+            return Ok(());
+        }
+
         if let Some(result) = this.binary_dict_view_op(lhs, rhs, DictViewBinaryOp::And)? {
             this.push(result);
             return Ok(());
@@ -306,6 +326,11 @@ impl<T: ResourceTracker> VM<'_, T> {
         defer_drop!(rhs, this);
         let lhs = this.pop();
         defer_drop!(lhs, this);
+
+        if let Some(result) = this.try_counter_binop(lhs, rhs, CounterOp::Or)? {
+            this.push(result);
+            return Ok(());
+        }
 
         if let Some(result) = this.binary_dict_view_op(lhs, rhs, DictViewBinaryOp::Or)? {
             this.push(result);
@@ -453,6 +478,31 @@ impl<T: ResourceTracker> VM<'_, T> {
         };
         let result_id = this.heap.allocate(result)?;
         Ok(Some(Value::Ref(result_id)))
+    }
+
+    /// Attempts a `Counter` arithmetic operation (`+`, `-`, `&`, `|`).
+    ///
+    /// Returns `Ok(None)` unless both operands are `Counter`s, in which case it
+    /// returns the resulting new `Counter`. Handled here (rather than via
+    /// `py_add`/`py_sub`) so the full `RunError` channel is available — the
+    /// `PyTrait` arithmetic hooks only surface `ResourceError`.
+    fn try_counter_binop(&mut self, lhs: &Value, rhs: &Value, op: CounterOp) -> RunResult<Option<Value>> {
+        let this = self;
+        let (Value::Ref(l), Value::Ref(r)) = (lhs, rhs) else {
+            return Ok(None);
+        };
+        if !matches!(this.heap.get(*l), HeapData::DictSubclass(_))
+            || !matches!(this.heap.get(*r), HeapData::DictSubclass(_))
+        {
+            return Ok(None);
+        }
+        let HeapReadOutput::DictSubclass(a) = this.heap.read(*l) else {
+            unreachable!("DictSubclass")
+        };
+        let HeapReadOutput::DictSubclass(b) = this.heap.read(*r) else {
+            unreachable!("DictSubclass")
+        };
+        counter_binop(&a, &b, op, this)
     }
 }
 

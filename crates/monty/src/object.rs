@@ -361,6 +361,8 @@ pub enum MontyType {
     Tuple,
     NamedTuple,
     Deque,
+    DefaultDict,
+    Counter,
     Dict,
     DictKeys,
     DictItems,
@@ -451,6 +453,8 @@ impl MontyType {
             Self::Tuple => Some(Type::Tuple),
             Self::NamedTuple => Some(Type::NamedTuple),
             Self::Deque => Some(Type::Deque),
+            Self::DefaultDict => Some(Type::DefaultDict),
+            Self::Counter => Some(Type::Counter),
             Self::Dict => Some(Type::Dict),
             Self::DictKeys => Some(Type::DictKeys),
             Self::DictItems => Some(Type::DictItems),
@@ -505,6 +509,8 @@ impl MontyType {
             Type::Tuple => Self::Tuple,
             Type::NamedTuple => Self::NamedTuple,
             Type::Deque => Self::Deque,
+            Type::DefaultDict => Self::DefaultDict,
+            Type::Counter => Self::Counter,
             Type::Dict => Self::Dict,
             Type::DictKeys => Self::DictKeys,
             Type::DictItems => Self::DictItems,
@@ -846,7 +852,7 @@ impl MontyObject {
                         HeapData::List(_) => Self::Cycle(id.index(), "[...]".to_owned()),
                         HeapData::Tuple(_) | HeapData::NamedTuple(_) => Self::Cycle(id.index(), "(...)".to_owned()),
                         HeapData::Deque(_) => Self::Cycle(id.index(), "deque([...])".to_owned()),
-                        HeapData::Dict(_) => Self::Cycle(id.index(), "{...}".to_owned()),
+                        HeapData::Dict(_) | HeapData::DictSubclass(_) => Self::Cycle(id.index(), "{...}".to_owned()),
                         _ => Self::Cycle(id.index(), "...".to_owned()),
                     };
                 }
@@ -909,6 +915,14 @@ impl MontyObject {
                             items.push(Self::from_value_inner(item, vm, visited));
                         }
                         Self::List(items)
+                    }
+                    HeapReadOutput::DictSubclass(sub) => {
+                        // Represent a defaultdict/Counter to the host as its
+                        // backing dict's contents.
+                        let dict_id = sub.get(vm.heap).dict_id();
+                        let item = Value::Ref(dict_id).clone_with_heap(vm.heap);
+                        defer_drop!(item, vm);
+                        Self::from_value_inner(item, vm, visited)
                     }
                     HeapReadOutput::Dict(dict) => {
                         let len = dict.get(vm.heap).len();

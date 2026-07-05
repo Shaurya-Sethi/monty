@@ -1729,6 +1729,15 @@ impl Value {
                         Ok(false)
                     }
                     HeapReadOutput::Dict(dict) => dict.contains_key(item, vm),
+                    HeapReadOutput::DictSubclass(sub) => {
+                        // Membership on a defaultdict/Counter checks the backing
+                        // dict's keys (a Counter miss is not counted as present).
+                        let dict_id = sub.get(vm.heap).dict_id();
+                        let HeapReadOutput::Dict(dict) = vm.heap.read(dict_id) else {
+                            panic!("dict subclass must reference a dict");
+                        };
+                        dict.contains_key(item, vm)
+                    }
                     HeapReadOutput::DictKeysView(view) => {
                         let dict_id = view.get(vm.heap).dict_id();
                         let HeapReadOutput::Dict(dict) = vm.heap.read(dict_id) else {

@@ -1077,13 +1077,28 @@ struct DictUpdateArgs {
 ///
 /// This is shared between `dict()` construction and `dict.update()` so both
 /// entry points follow identical positional-source semantics.
-fn dict_merge_from_value(dict: &mut Dict, other_value: Value, vm: &mut VM<'_, impl ResourceTracker>) -> RunResult<()> {
+pub(crate) fn dict_merge_from_value(
+    dict: &mut Dict,
+    other_value: Value,
+    vm: &mut VM<'_, impl ResourceTracker>,
+) -> RunResult<()> {
     let mut other_value_guard = HeapGuard::new(other_value, vm);
     {
         let (other_value, vm) = other_value_guard.as_parts();
-        if let Value::Ref(id) = other_value
-            && let HeapData::Dict(src_dict) = vm.heap.get(*id)
-        {
+        // Treat a plain dict — or a dict subclass (defaultdict/Counter), via its
+        // backing dict — as a mapping, cloning its key/value pairs.
+        let mapping_id = match other_value {
+            Value::Ref(id) => match vm.heap.get(*id) {
+                HeapData::Dict(_) => Some(*id),
+                HeapData::DictSubclass(sub) => Some(sub.dict_id()),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(mapping_id) = mapping_id {
+            let HeapData::Dict(src_dict) = vm.heap.get(mapping_id) else {
+                unreachable!("mapping id references a dict")
+            };
             // Clone key-value pairs from the source dict.
             let pairs: Vec<(Value, Value)> = src_dict
                 .iter()
@@ -1157,7 +1172,7 @@ fn dict_merge_from_iterable_pairs(
 ///
 /// This helper drains `kwargs` safely on error so all values are dropped
 /// correctly, then inserts each key-value pair into `dict`.
-fn dict_merge_from_kwargs(
+pub(crate) fn dict_merge_from_kwargs(
     dict: &mut Dict,
     kwargs: KwargsValues,
     vm: &mut VM<'_, impl ResourceTracker>,
