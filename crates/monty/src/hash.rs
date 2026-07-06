@@ -124,18 +124,6 @@ impl<'de> serde::Deserialize<'de> for HashValue {
     }
 }
 
-/// Hashes any `Hash` value with a fresh [`DefaultHasher`].
-///
-/// Keeps the hasher boilerplate in one place for the cold `Value::py_hash` arms
-/// (builtins, functions, markers, singletons), so the hot arms (int/str/ref)
-/// never pay for constructing a hasher they don't use.
-#[inline]
-pub(crate) fn hash_one(value: impl Hash) -> HashValue {
-    let mut hasher = DefaultHasher::new();
-    value.hash(&mut hasher);
-    HashValue::new(hasher.finish())
-}
-
 /// Hashes a heap value by its identity (`HeapId`).
 ///
 /// The canonical hash for objects that compare by identity — user classes,
@@ -143,7 +131,9 @@ pub(crate) fn hash_one(value: impl Hash) -> HashValue {
 /// a user `__hash__`). Keeps the `DefaultHasher` boilerplate in one place.
 #[inline]
 pub(crate) fn identity_hash(id: HeapId) -> HashValue {
-    hash_one(id)
+    let mut hasher = DefaultHasher::new();
+    id.hash(&mut hasher);
+    HashValue::new(hasher.finish())
 }
 
 /// Hashes a string using the canonical Python-string hash function.
