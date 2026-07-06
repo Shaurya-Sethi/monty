@@ -2,7 +2,7 @@ use std::{
     cell::{Cell, UnsafeCell},
     fmt,
     marker::PhantomData,
-    mem::{self, ManuallyDrop},
+    mem::ManuallyDrop,
     ops::{Deref, DerefMut},
     ptr::{self, NonNull},
 };
@@ -772,10 +772,6 @@ pub(crate) struct Heap<T: ResourceTracker> {
     /// Lazily allocated on first access to `timezone.utc`. Once created, the refcount
     /// is incremented on each access so the caller can drop their reference normally.
     timezone_utc: Option<HeapId>,
-    /// Pooled scratch stack for [`dec_ref`](Self::dec_ref)'s iterative child freeing,
-    /// reused across calls so freeing a container doesn't malloc a fresh `Vec` each time.
-    /// Purely transient (always empty between `dec_ref` calls) — never serialized.
-    dec_ref_stack: Vec<HeapId>,
 }
 
 impl<T: ResourceTracker + serde::Serialize> serde::Serialize for Heap<T> {
@@ -812,7 +808,6 @@ impl<'de, T: ResourceTracker + serde::Deserialize<'de>> serde::Deserialize<'de> 
             #[cfg(feature = "test-hooks")]
             gc_disabled: false,
             timezone_utc: fields.timezone_utc,
-            dec_ref_stack: Vec::new(),
         })
     }
 }
@@ -832,11 +827,6 @@ const DEFAULT_GC_INTERVAL: usize = if cfg!(feature = "memory-model-checks") {
     100_000
 };
 
-/// Largest capacity (in entries) the pooled `dec_ref` scratch stack keeps between
-/// calls. Frees that fan out wider than this hand their buffer back to the
-/// allocator so a single huge container can't pin untracked host memory.
-const DEC_REF_STACK_MAX_POOLED_CAPACITY: usize = 1024;
-
 impl<T: ResourceTracker> Heap<T> {
     /// Creates a new heap with the given resource tracker.
     ///
@@ -850,7 +840,6 @@ impl<T: ResourceTracker> Heap<T> {
             #[cfg(feature = "test-hooks")]
             gc_disabled: false,
             timezone_utc: None,
-            dec_ref_stack: Vec::new(),
         };
 
         // The empty-tuple singleton starts with refcount = 1 — that single ref *is* the
@@ -1023,9 +1012,10 @@ impl<T: ResourceTracker> Heap<T> {
     pub fn dec_ref(&mut self, id: HeapId) {
         HeapReader::with(self, &mut (), |reader, ()| {
             let mut current_id = id;
-            // Reuse the pooled scratch stack (empty between calls); a reentrant
-            // `dec_ref` would simply find an empty `Vec` and still be correct.
-            let mut work_stack = mem::take(&mut reader.heap.dec_ref_stack);
+            // A fresh Vec is deliberate: it costs nothing unless children are
+            // actually pushed, whereas pooling it on the Heap was measured
+            // (CodSpeed, PR #536) to add take/restore traffic to every call.
+            let mut work_stack = Vec::new();
             loop {
                 // Using `HeapPtr` avoids the possibility of aliasing with live borrows
                 // held by `HeapRead` handles.
@@ -1077,11 +1067,6 @@ impl<T: ResourceTracker> Heap<T> {
                     break;
                 };
                 current_id = next_id;
-            }
-            // Return the (now empty) stack to the pool, unless a huge free grew it —
-            // don't let one wide container pin a large untracked host buffer.
-            if work_stack.capacity() <= DEC_REF_STACK_MAX_POOLED_CAPACITY {
-                reader.heap.dec_ref_stack = work_stack;
             }
         });
     }
