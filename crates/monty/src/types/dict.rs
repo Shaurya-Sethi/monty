@@ -232,6 +232,11 @@ fn json_key_equals_str(key: &Value, expected: &str, heap: &Heap<impl ResourceTra
 /// This lets `find_index_hash` probe without the per-candidate `clone_with_heap` +
 /// `defer_drop` round trip, which exists only to release the heap borrow before
 /// `py_eq(&mut vm)`.
+///
+/// `#[inline]` matters: on the instrumented CodSpeed build this and the `eq_*`
+/// helpers stayed outlined, and the per-candidate call overhead showed up as a
+/// `find_index_hash` self-time regression (PR #536 flamegraphs).
+#[inline]
 fn simple_key_eq(key: &Value, stored: &Value, vm: &VM<'_, impl ResourceTracker>) -> Option<bool> {
     if !is_simple_key(stored, vm) {
         return None;
@@ -257,6 +262,7 @@ fn simple_key_eq(key: &Value, stored: &Value, vm: &VM<'_, impl ResourceTracker>)
 
 /// Whether a dict key's equality is guaranteed to be pure data comparison
 /// (no instance `__eq__`, no reflected protocol) — see [`simple_key_eq`].
+#[inline]
 fn is_simple_key(value: &Value, vm: &VM<'_, impl ResourceTracker>) -> bool {
     match value {
         Value::Int(_)
