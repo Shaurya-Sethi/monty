@@ -64,7 +64,7 @@ test('assertion error', () => {
 test('assertion error with message', () => {
   const m = new Monty('assert False, "custom message"')
   const error = t.throws(() => m.run(), isRuntimeError)
-  t.is(error.message, 'AssertionError: custom message\nassert False')
+  t.is(error.message, 'AssertionError: custom message')
 })
 
 test('runtime error', () => {
