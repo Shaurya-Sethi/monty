@@ -33,8 +33,10 @@ function findArtifact(name, directory = artifacts) {
 /** Extracts the worker executable from a `pydantic-monty-runtime` wheel. */
 function extractRuntime(triple, destination) {
   const wheelDirectory = join(artifacts, runtimeArtifacts[triple])
-  const wheels = readdirSync(wheelDirectory).filter((name) => name.endsWith('.whl'))
-  if (wheels.length !== 1) throw new Error(`expected one runtime wheel in ${wheelDirectory}, found ${wheels.length}`)
+  // FIXME: maturin currently emits one identical runtime wheel per requested Python version.
+  const wheels = readdirSync(wheelDirectory).filter((name) => /-cp310-.*\.whl$/.test(name))
+  if (wheels.length !== 1)
+    throw new Error(`expected one CPython 3.10 runtime wheel in ${wheelDirectory}, found ${wheels.length}`)
   const script = `
 import sys, zipfile
 wheel, binary, destination = sys.argv[1:]
