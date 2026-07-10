@@ -547,14 +547,6 @@ jobs:
           name: pypi_files-python-${{ matrix.os }}-${{ matrix.target }}-${{ matrix.manylinux || 'manylinux' }}
           path: crates/monty-python/dist
 
-      # no release versioning, see https://github.com/dtolnay/rust-toolchain/issues/180
-      - name: install LLVM tools for PGO
-        if: matrix.pgo-runtime
-        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
-        with:
-          toolchain: stable
-          components: llvm-tools
-
       # Maturin performs one PGO cycle for bin bindings, then packages the
       # runtime for each supported Python tag.
       - name: build runtime wheel
@@ -567,6 +559,7 @@ jobs:
           args: --release ${{ matrix.pgo-runtime && '--pgo' || '' }} --out dist -i 3.10 3.11 3.12 3.13 3.14
           maturin-version: v1.14.1
           rust-toolchain: stable
+          rustup-components: ${{ matrix.pgo-runtime && 'llvm-tools-preview' || '' }}
           docker-options: -e CI
           working-directory: crates/monty-runtime
 
