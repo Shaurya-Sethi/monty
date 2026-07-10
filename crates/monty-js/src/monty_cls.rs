@@ -47,9 +47,9 @@
 use std::{borrow::Cow, fmt::Write, mem, ptr, result};
 
 use monty::{
-    fs::MountTable, ExcType, ExtFunctionResult, FunctionCall, LimitedTracker, MontyException, MontyObject,
-    MontyRepl as CoreMontyRepl, MontyRun, NameLookup, NameLookupResult, NoLimitTracker, OsCall, PrintWriter,
-    PrintWriterCallback, ReplProgress, ResourceTracker, RunProgress,
+    fs::MountTable, CompileOptions, ExcType, ExtFunctionResult, FunctionCall, LimitedTracker, MontyException,
+    MontyObject, MontyRepl as CoreMontyRepl, MontyRun, NameLookup, NameLookupResult, NoLimitTracker, OsCall,
+    PrintWriter, PrintWriterCallback, ReplProgress, ResourceTracker, RunProgress,
 };
 use monty_type_checking::{type_check, SourceFile};
 use napi::{bindgen_prelude::*, sys::Status};
@@ -159,7 +159,7 @@ impl Monty {
         }
 
         // Create the runner (parses the code)
-        let runner = match MontyRun::new(code, &script_name, input_names.clone()) {
+        let runner = match MontyRun::new(code, &script_name, input_names.clone(), CompileOptions::default()) {
             Ok(r) => r,
             Err(exc) => return Ok(Either3::B(JsMontyException::new(exc))),
         };
