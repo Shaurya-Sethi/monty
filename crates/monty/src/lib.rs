@@ -41,7 +41,7 @@ pub use crate::{
     exception_public::{
         CodeLoc, ExcData, JsonErrorData, MontyException, StackFrame, UnicodeErrorData, UnicodeErrorObject,
     },
-    io::{PrintStream, PrintWriter, PrintWriterCallback},
+    io::{DEFAULT_MAX_PRINT_COLLECT_BYTES, PrintStream, PrintWriter, PrintWriterCallback, check_print_collect_limit},
     object::{
         DictPairs, InvalidInputError, MontyDate, MontyDateTime, MontyFileHandle, MontyObject, MontyTimeDelta,
         MontyTimeZone, MontyType,

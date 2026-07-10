@@ -1,0 +1,109 @@
+//! Byte caps on `PrintWriter::CollectString` / `CollectStreams`.
+//!
+//! Host-side collectors sit outside `ResourceLimits::max_memory` (Monty heap
+//! only). These tests lock the optional `max_bytes` check: capped runs raise
+//! `MemoryError` without growing past the limit; `None` opts out; `Disabled`
+//! under a tight heap limit still succeeds.
+//!
+//! Loops stay at ~256 KiB — safe, not a real OOM.
+
+use monty::{ExcType, LimitedTracker, MontyRun, NoLimitTracker, PrintStream, PrintWriter, ResourceLimits};
+
+/// One KiB payload reused across prints so heap growth stays small.
+const CHUNK: &str = "A";
+const CHUNK_REPS: usize = 1024;
+const PRINTS: usize = 256;
+/// Host collector target ≈ 256 KiB with `end=''`.
+const EXPECTED_MIN_BYTES: usize = CHUNK_REPS * PRINTS;
+/// Cap / heap limit well below collected output.
+const LIMIT_BYTES: usize = 64 * 1024;
+
+fn print_loop_code() -> String {
+    format!("s = '{CHUNK}' * {CHUNK_REPS}\nfor _ in range({PRINTS}):\n    print(s, end='')\n")
+}
+
+#[test]
+fn collect_string_respects_max_bytes() {
+    let code = print_loop_code();
+    let ex = MontyRun::new(code, "test.py", vec![]).unwrap();
+    let mut output = String::new();
+
+    let err = ex
+        .run(
+            vec![],
+            NoLimitTracker,
+            PrintWriter::CollectString(&mut output, Some(LIMIT_BYTES)),
+        )
+        .expect_err("expected MemoryError when collect buffer exceeds max_bytes");
+
+    assert_eq!(err.exc_type(), ExcType::MemoryError);
+    let expected = format!(
+        "memory limit exceeded: {} bytes > {LIMIT_BYTES} bytes",
+        // first write that would cross the limit: LIMIT + one chunk
+        LIMIT_BYTES + CHUNK_REPS
+    );
+    assert_eq!(err.message(), Some(expected.as_str()));
+    assert!(
+        output.len() <= LIMIT_BYTES,
+        "buffer must stay at or under cap, got {}",
+        output.len()
+    );
+    // Filled up to the last successful chunk boundary (exact multiple of CHUNK_REPS).
+    assert_eq!(output.len() % CHUNK_REPS, 0);
+    assert_eq!(output.len(), LIMIT_BYTES);
+}
+
+#[test]
+fn collect_streams_respects_max_bytes() {
+    let code = print_loop_code();
+    let ex = MontyRun::new(code, "test.py", vec![]).unwrap();
+    let mut streams: Vec<(PrintStream, String)> = Vec::new();
+
+    let err = ex
+        .run(
+            vec![],
+            NoLimitTracker,
+            PrintWriter::CollectStreams(&mut streams, Some(LIMIT_BYTES)),
+        )
+        .expect_err("expected MemoryError when collect buffer exceeds max_bytes");
+
+    let total: usize = streams.iter().map(|(_, s)| s.len()).sum();
+    assert_eq!(err.exc_type(), ExcType::MemoryError);
+    assert!(total <= LIMIT_BYTES, "buffer must stay at or under cap, got {total}");
+    assert_eq!(total, LIMIT_BYTES);
+}
+
+/// Control: same loop under tight `max_memory` with `Disabled` still succeeds —
+/// proves the print loop itself fits the heap budget; the Collect* failures above
+/// are from the host buffer cap, not sandbox memory.
+#[test]
+fn disabled_print_stays_under_max_memory() {
+    let code = print_loop_code();
+    let ex = MontyRun::new(code, "test.py", vec![]).unwrap();
+    let limits = ResourceLimits::new().max_memory(LIMIT_BYTES);
+
+    let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Disabled);
+    assert!(result.is_ok(), "control failed: {result:?}");
+}
+
+/// Opt-out: `max_bytes=None` still allows growth past a 64 KiB would-be cap.
+#[test]
+fn collect_string_unlimited_allows_growth_past_64kib() {
+    let code = print_loop_code();
+    let ex = MontyRun::new(code, "test.py", vec![]).unwrap();
+    let mut output = String::new();
+
+    ex.run(vec![], NoLimitTracker, PrintWriter::CollectString(&mut output, None))
+        .expect("unlimited collect should succeed");
+
+    assert!(
+        output.len() >= EXPECTED_MIN_BYTES,
+        "expected >= {EXPECTED_MIN_BYTES} bytes, got {}",
+        output.len()
+    );
+    assert!(
+        output.len() > LIMIT_BYTES,
+        "opt-out not shown: collected {} did not exceed {LIMIT_BYTES}",
+        output.len()
+    );
+}

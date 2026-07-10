@@ -710,7 +710,7 @@ fn call_function_captures_print() {
         .call_function(
             "say_hello",
             vec![MontyObject::String("world".to_owned())],
-            PrintWriter::CollectString(&mut output),
+            PrintWriter::collect_string(&mut output),
         )
         .unwrap();
     assert_eq!(result, MontyObject::None);
