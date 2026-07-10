@@ -112,3 +112,63 @@ fn collect_string_unlimited_allows_growth_past_64kib() {
         output.len()
     );
 }
+
+/// Covers `PrintWriter::collect_streams` and `stdout_push` → `append_streams_char`
+/// (the `end=''` loop tests never push a terminator).
+#[test]
+fn collect_streams_helper_merges_newline_push() {
+    let ex = MontyRun::new("print('hi')".to_owned(), "test.py", vec![]).unwrap();
+    let mut streams: Vec<(PrintStream, String)> = Vec::new();
+
+    ex.run(vec![], NoLimitTracker, PrintWriter::collect_streams(&mut streams))
+        .expect("default-capped collect_streams should accept a short print");
+
+    assert_eq!(streams, vec![(PrintStream::Stdout, "hi\n".to_owned())]);
+}
+
+/// Bare `print()` only `stdout_push`es `'\n'` — exercises the empty-buffer branch
+/// of `append_streams_char`.
+#[test]
+fn collect_streams_empty_print_pushes_newline_entry() {
+    let ex = MontyRun::new("print()".to_owned(), "test.py", vec![]).unwrap();
+    let mut streams: Vec<(PrintStream, String)> = Vec::new();
+
+    ex.run(vec![], NoLimitTracker, PrintWriter::collect_streams(&mut streams))
+        .expect("empty print should succeed");
+
+    assert_eq!(streams, vec![(PrintStream::Stdout, "\n".to_owned())]);
+}
+
+/// Cap of 1 byte: `print('a')` writes `'a'` then fails on the newline push.
+#[test]
+fn collect_string_max_bytes_rejects_newline_push() {
+    let ex = MontyRun::new("print('a')".to_owned(), "test.py", vec![]).unwrap();
+    let mut output = String::new();
+
+    let err = ex
+        .run(vec![], NoLimitTracker, PrintWriter::CollectString(&mut output, Some(1)))
+        .expect_err("expected MemoryError on newline push past max_bytes");
+
+    assert_eq!(err.exc_type(), ExcType::MemoryError);
+    assert_eq!(err.message(), Some("memory limit exceeded: 2 bytes > 1 bytes"));
+    assert_eq!(output, "a");
+}
+
+/// Same as the string case, but through CollectStreams' char-append path.
+#[test]
+fn collect_streams_max_bytes_rejects_newline_push() {
+    let ex = MontyRun::new("print('a')".to_owned(), "test.py", vec![]).unwrap();
+    let mut streams: Vec<(PrintStream, String)> = Vec::new();
+
+    let err = ex
+        .run(
+            vec![],
+            NoLimitTracker,
+            PrintWriter::CollectStreams(&mut streams, Some(1)),
+        )
+        .expect_err("expected MemoryError on newline push past max_bytes");
+
+    assert_eq!(err.exc_type(), ExcType::MemoryError);
+    assert_eq!(err.message(), Some("memory limit exceeded: 2 bytes > 1 bytes"));
+    assert_eq!(streams, vec![(PrintStream::Stdout, "a".to_owned())]);
+}
