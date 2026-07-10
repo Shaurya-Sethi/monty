@@ -274,7 +274,7 @@ make build-wasm           Build the lean wasm worker module (requires the wasm32
 make test-wasm            Test the wasm worker pool/transport (requires a prior build-wasm)
 make build-cpython-image  Build the monty-cpython docker image (locally by default)
 make upload-cpython-image Build the monty-cpython docker image and push to ghcr.io/pydantic/monty-cpython
-make dev-py-pgo           Install the python package for development with profile-guided optimization
+make dev-py-pgo           Install the Python package with a PGO-optimized Monty runtime
 make format-rs            Format Rust code with fmt
 make format-py            Format Python code - WARNING be careful about this command as it may modify code and break tests silently!
 make format-js            Format JS code with prettier

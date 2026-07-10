@@ -92,14 +92,12 @@ upload-cpython-image: ## Build the monty-cpython docker image and push to ghcr.i
 		BUILDX_OUTPUT=--push
 
 .PHONY: dev-py-pgo
-dev-py-pgo: ## Install the python package for development with profile-guided optimization
-	$(eval PROFDATA := $(shell mktemp -d))
-	RUSTFLAGS='-Cprofile-generate=$(PROFDATA)' uv run maturin develop --uv -m crates/monty-python/Cargo.toml --release
-	uv run --package pydantic-monty --only-dev pytest crates/monty-python/tests -k "not test_parallel_exec"
-	$(eval LLVM_PROFDATA := $(shell rustup run stable bash -c 'echo $$RUSTUP_HOME/toolchains/$$RUSTUP_TOOLCHAIN/lib/rustlib/$$(rustc -Vv | grep host | cut -d " " -f 2)/bin/llvm-profdata'))
-	$(LLVM_PROFDATA) merge -o $(PROFDATA)/merged.profdata $(PROFDATA)
-	RUSTFLAGS='-Cprofile-use=$(PROFDATA)/merged.profdata' $(uv-run-no-sync) maturin develop --uv -m crates/monty-python/Cargo.toml --release
-	@rm -rf $(PROFDATA)
+dev-py-pgo: ## Install the Python package with a PGO-optimized Monty interpreter
+	rustup component add llvm-tools --toolchain stable
+	rm -rf target/pgo-wheels
+	uvx --from 'maturin==1.14.1' maturin build -m crates/monty-runtime/Cargo.toml --release --pgo -i "$$(uv run python -c 'import sys; print(sys.executable)')" --out target/pgo-wheels
+	uv pip install --python "$$(uv run python -c 'import sys; print(sys.executable)')" --reinstall --no-deps target/pgo-wheels/pydantic_monty_runtime-*.whl
+	uv run maturin develop --uv -m crates/monty-python/Cargo.toml --release
 
 .PHONY: format-rs
 format-rs:  ## Format Rust code with fmt

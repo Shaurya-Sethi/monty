@@ -2061,6 +2061,7 @@ dependencies = [
  "chrono",
  "datatest-stable",
  "monty",
+ "monty-pool",
  "pyo3",
  "pyo3-build-config",
  "similar 2.7.0",
