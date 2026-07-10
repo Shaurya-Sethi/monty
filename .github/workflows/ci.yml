@@ -1120,13 +1120,14 @@ jobs:
           if-no-files-found: error
 
   test-js-packages:
-    name: test ${{ matrix.triple }} JS package
+    name: test ${{ matrix.platform.triple }} JS package on node@${{ matrix.node }}
     needs:
       - assemble-js-packages
     strategy:
       fail-fast: false
       matrix:
-        include:
+        node: ['20', '24']
+        platform:
           - os: macos-15-intel
             triple: darwin-x64
           - os: macos-latest
@@ -1137,7 +1138,7 @@ jobs:
             triple: linux-arm64-gnu
           - os: windows-latest
             triple: win32-x64-msvc
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.platform.os }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -1146,7 +1147,7 @@ jobs:
       - name: Setup node
         uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
-          node-version: 24
+          node-version: ${{ matrix.node }}
           package-manager-cache: false
 
       - name: Download package tarballs
@@ -1156,7 +1157,7 @@ jobs:
           path: crates/monty-js/package-tarballs
 
       - name: Install packed packages
-        run: npm install ../package-tarballs/monty-main.tgz ../package-tarballs/monty-${{ matrix.triple }}.tgz --force --no-save --no-package-lock
+        run: npm install ../package-tarballs/monty-main.tgz ../package-tarballs/monty-${{ matrix.platform.triple }}.tgz --force --no-save --no-package-lock
         working-directory: crates/monty-js/smoke-test
 
       - name: Import package and run a worker
