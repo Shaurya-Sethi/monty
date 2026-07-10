@@ -1,5 +1,5 @@
 import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync } from 'node:fs'
-import { basename, dirname, join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
 
@@ -82,9 +82,8 @@ for (const triple of triples) {
   packAndValidate(platformDirectory, `monty-${triple}.tgz`, ['package.json', `monty.${triple}.node`, binary])
 }
 
-const wasm = findArtifact('monty_wasm_runtime.wasm')
-mkdirSync(join(root, 'dist', 'worker'), { recursive: true })
-cpSync(wasm, join(root, 'dist', 'worker', basename(wasm)))
+const wasm = join(root, 'dist', 'worker', 'monty_wasm_runtime.wasm')
+if (!existsSync(wasm)) throw new Error(`missing wasm runtime: ${wasm}`)
 packAndValidate(root, 'monty-main.tgz', [
   'dist/index.js',
   'dist/node.js',
