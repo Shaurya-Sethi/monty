@@ -146,7 +146,17 @@ impl<T: ResourceTracker> VM<'_, T> {
                     this.push(Value::Bool(is_equal));
                     Ok(())
                 }
-                Ok(None) => Err(ExcType::type_error("unsupported operand type(s) for %")),
+                Ok(None) => {
+                    // Same typed message as an unfused `%` (see `binary_mod`).
+                    let lhs_type = lhs.py_type(this);
+                    let lhs_name = lhs_type.name(this.heap, this.interns);
+                    Err(ExcType::binary_type_error(
+                        "%",
+                        lhs_type,
+                        lhs_name,
+                        rhs.py_type_name(this),
+                    ))
+                }
                 Err(e) => Err(e),
             }
         }

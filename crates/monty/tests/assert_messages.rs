@@ -52,9 +52,23 @@ fn falsy_value_fallback() {
     // `not` / chained comparisons / boolean ops evaluate to a bool first.
     assert_snapshot!(assert_msg("assert not True"), @"assert False");
     assert_snapshot!(assert_msg("assert 1 < 2 > 3"), @"assert False");
-    // `x % n == k` is fused into a ModEq comparison during preparation, so it
-    // takes the generic path rather than showing lhs/rhs (see limitations).
-    assert_snapshot!(assert_msg("assert 5 % 3 == 0"), @"assert False");
+}
+
+#[test]
+fn fused_mod_eq_shows_reduced_comparison() {
+    // `x % n == k` is fused into a ModEq comparison during preparation; the
+    // assert compiler reduces it back to `(x % n) == k` so the message shows
+    // the computed mod value rather than degrading to `assert False`.
+    assert_snapshot!(assert_msg("assert 5 % 3 == 0"), @"assert 2 == 0");
+    assert_snapshot!(assert_msg("x = 7\nassert x % 4 == 1"), @"assert 3 == 1");
+    assert_snapshot!(assert_msg("assert -7.0 % 3.0 == 1"), @"assert 2.0 == 1");
+    assert_snapshot!(assert_msg("assert 5 % 3 == 0, 'not divisible'"), @r"
+    not divisible
+    assert 2 == 0
+    ");
+    // A zero divisor raises ZeroDivisionError, exactly like an unfused `%`.
+    let err = get_err("assert 5 % 0 == 1");
+    assert_eq!(err.exc_type(), ExcType::ZeroDivisionError);
 }
 
 #[test]

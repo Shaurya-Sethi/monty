@@ -584,27 +584,32 @@ impl<'h> PyTrait<'h> for Value {
                 if *v2 == 0.0 {
                     Err(ExcType::zero_division().into())
                 } else {
-                    Ok(Some(Self::Float(v1 % v2)))
+                    Ok(Some(Self::Float(py_float_mod(*v1, *v2))))
                 }
             }
             (Self::Float(v1), Self::Int(v2)) => {
                 if *v2 == 0 {
                     Err(ExcType::zero_division().into())
                 } else {
-                    Ok(Some(Self::Float(v1 % (*v2 as f64))))
+                    Ok(Some(Self::Float(py_float_mod(*v1, *v2 as f64))))
                 }
             }
             (Self::Int(v1), Self::Float(v2)) => {
                 if *v2 == 0.0 {
                     Err(ExcType::zero_division().into())
                 } else {
-                    Ok(Some(Self::Float((*v1 as f64) % v2)))
+                    Ok(Some(Self::Float(py_float_mod(*v1 as f64, *v2))))
                 }
             }
             _ => Ok(None),
         }
     }
 
+    /// Fast-path `self % other == right_value` for the fused `CompareModEq` opcode.
+    ///
+    /// Returns `None` when this pair needs the slow path (`py_mod` + `py_eq`) —
+    /// non-numeric types, and any zero divisor so the fallback raises
+    /// `ZeroDivisionError` exactly like an unfused `%` would.
     fn py_mod_eq(&self, other: &Self, right_value: i64) -> Option<bool> {
         match (self, other) {
             (Self::Int(v1), Self::Int(v2)) => {
@@ -617,9 +622,11 @@ impl<'h> PyTrait<'h> for Value {
                     (*v2 != 0).then_some(0 == right_value)
                 }
             }
-            (Self::Float(v1), Self::Float(v2)) => Some(v1 % v2 == right_value as f64),
-            (Self::Float(v1), Self::Int(v2)) => Some(v1 % (*v2 as f64) == right_value as f64),
-            (Self::Int(v1), Self::Float(v2)) => Some((*v1 as f64) % v2 == right_value as f64),
+            (Self::Float(v1), Self::Float(v2)) => (*v2 != 0.0).then(|| py_float_mod(*v1, *v2) == right_value as f64),
+            (Self::Float(v1), Self::Int(v2)) => (*v2 != 0).then(|| py_float_mod(*v1, *v2 as f64) == right_value as f64),
+            (Self::Int(v1), Self::Float(v2)) => {
+                (*v2 != 0.0).then(|| py_float_mod(*v1 as f64, *v2) == right_value as f64)
+            }
             _ => None,
         }
     }
@@ -2548,6 +2555,23 @@ pub(crate) fn floor_divmod(a: i64, b: i64) -> Option<(i64, i64)> {
         Some((quot - 1, rem + b))
     } else {
         Some((quot, rem))
+    }
+}
+
+/// Computes Python-style float modulo (CPython's `float_rem`).
+///
+/// Unlike Rust's `%` (which follows the dividend's sign), the result takes the
+/// divisor's sign — `-7.0 % 3.0 == 2.0` — and a zero result gets the divisor's
+/// sign too (`6.0 % -3.0 == -0.0`). Callers must reject a zero divisor first
+/// (`ZeroDivisionError`); this helper assumes `b != 0`.
+fn py_float_mod(a: f64, b: f64) -> f64 {
+    let r = a % b;
+    if r == 0.0 {
+        0.0f64.copysign(b)
+    } else if (b < 0.0) != (r < 0.0) {
+        r + b
+    } else {
+        r
     }
 }
 

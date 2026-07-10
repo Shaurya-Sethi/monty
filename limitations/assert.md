@@ -21,9 +21,9 @@ values involved instead of a blank `AssertionError`.
 - Chained comparisons (`assert 1 < 2 > 3`), `not` expressions, and boolean
   operators evaluate to a `bool` first, so their message degrades to
   `assert False`.
-- `assert x % n == k` also degrades to `assert False`: Monty internally fuses
-  `% ... ==` into a single comparison with no separate lhs/rhs to show, even
-  though the source contains a syntactic `==`.
+- `assert x % n == k` shows the computed mod value as the left operand
+  (`assert 5 % 3 == 0` → `assert 2 == 0`) — the same rule as any other `==`,
+  where each operand's value is shown.
 
 ## `assert test, msg` appends the detail on a new line
 
