@@ -575,9 +575,13 @@ impl MontyRepl {
 
         let repl = if let Some(limits) = options.limits {
             let tracker = LimitedTracker::new(limits.try_into()?);
-            EitherRepl::Limited(CoreMontyRepl::new(&script_name, tracker))
+            EitherRepl::Limited(CoreMontyRepl::new(&script_name, tracker, CompileOptions::default()))
         } else {
-            EitherRepl::NoLimit(CoreMontyRepl::new(&script_name, NoLimitTracker))
+            EitherRepl::NoLimit(CoreMontyRepl::new(
+                &script_name,
+                NoLimitTracker,
+                CompileOptions::default(),
+            ))
         };
 
         Ok(Self {

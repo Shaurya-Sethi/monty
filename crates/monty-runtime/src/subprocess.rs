@@ -15,7 +15,7 @@
 use std::{borrow::Cow, io, mem, panic, process::ExitCode};
 
 use monty::{
-    ExcType, ExtFunctionResult, LimitedTracker, MontyException, MontyObject, MontyRepl, PrintWriter,
+    CompileOptions, ExcType, ExtFunctionResult, LimitedTracker, MontyException, MontyObject, MontyRepl, PrintWriter,
     PrintWriterCallback, ReplProgress, ReplStartError, fs::MountTable,
 };
 use monty_proto::{
@@ -325,7 +325,11 @@ impl Child {
             committed_stubs: type_check_stubs.unwrap_or_default(),
             pending_snippet: None,
         });
-        self.state = SessionState::Ready(Box::new(MontyRepl::new(&self.script_name, LimitedTracker::new(limits))));
+        self.state = SessionState::Ready(Box::new(MontyRepl::new(
+            &self.script_name,
+            LimitedTracker::new(limits),
+            CompileOptions::default(),
+        )));
         Ok(())
     }
 
