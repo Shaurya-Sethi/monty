@@ -1,4 +1,4 @@
-// Wire protocol for driving a `monty --subprocess` child process.
+// Wire protocol for driving a `monty subprocess` child process.
 //
 // Transport: each message is framed as a 4-byte unsigned little-endian length
 // prefix followed by the protobuf-encoded bytes, written to the child's stdin

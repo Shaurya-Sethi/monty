@@ -56,18 +56,12 @@ dev-py-release: ## Install the python package for development with a release bui
 	uv run maturin develop --uv -m crates/monty-python/Cargo.toml --release
 
 .PHONY: build-wasm
-build-wasm: install-js ## Build the wasm artifacts (requires the wasm32-wasip1-threads toolchain)
-	# NOTE: regenerates index.js/index.d.ts from the wasm target (which has no
-	# pool API) — run build-js afterwards to restore the native loader
+build-wasm: install-js ## Build the lean wasm worker module (requires the wasm32-wasip1 target)
 	cd crates/monty-js && npm run build:wasm && npm run build:ts
-
-.PHONY: test-wasm
-test-wasm: ## Test the in-process API against the wasm build (requires a prior build-wasm)
-	cd crates/monty-js && NAPI_RS_FORCE_WASI=true npx vitest run __test__/wasm_*.spec.ts
 
 .PHONY: test-browser
 test-browser: install-js ## Browser (Vitest) test of the wasm path in a real headless browser
-	cd crates/monty-js && npm run build:wasm && npx playwright install chromium && npm run test:browser
+	cd crates/monty-js && npm run build:wasm && npm run build:ts && npx playwright install chromium && npm run test:browser
 
 # OCI image for the monty-cpython sandbox worker. Override to retag/push, e.g.
 # `make build-cpython-image MONTY_CPYTHON_IMAGE=ghcr.io/pydantic/monty-cpython`.

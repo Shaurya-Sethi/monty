@@ -1,10 +1,20 @@
 import { test } from 'vitest'
 import { t } from './assertions.js'
-import { Buffer } from 'node:buffer'
 
 import { setupPool } from './helpers.js'
 
 const { run } = setupPool()
+
+function bytes(values: number[]): Uint8Array {
+  return new Uint8Array(values)
+}
+
+function bytesArray(value: unknown): number[] {
+  if (value instanceof Uint8Array) {
+    return [...value]
+  }
+  throw new Error(`expected bytes-like value, got ${Object.prototype.toString.call(value)}`)
+}
 
 // =============================================================================
 // None tests
@@ -61,21 +71,18 @@ test('string', async () => {
 // =============================================================================
 
 test('bytes', async () => {
-  const result = await run('x', { inputs: { x: Buffer.from('hello') } })
-  t.true(Buffer.isBuffer(result))
-  t.deepEqual([...(result as Buffer)], [104, 101, 108, 108, 111])
+  const result = await run('x', { inputs: { x: bytes([104, 101, 108, 108, 111]) } })
+  t.deepEqual(bytesArray(result), [104, 101, 108, 108, 111])
 })
 
 test('bytes empty', async () => {
-  const result = await run('x', { inputs: { x: Buffer.from([]) } })
-  t.true(Buffer.isBuffer(result))
-  t.deepEqual([...(result as Buffer)], [])
+  const result = await run('x', { inputs: { x: bytes([]) } })
+  t.deepEqual(bytesArray(result), [])
 })
 
 test('bytes result', async () => {
   const result = await run('b"hello"')
-  t.true(Buffer.isBuffer(result))
-  t.deepEqual([...(result as Buffer)], [104, 101, 108, 108, 111])
+  t.deepEqual(bytesArray(result), [104, 101, 108, 108, 111])
 })
 
 // =============================================================================
@@ -89,8 +96,7 @@ test('str encode ascii ignore then bytes decode ascii round-trips', async () => 
 
 test('str encode ascii replace', async () => {
   const result = await run('"héllo".encode("ascii", "replace")')
-  t.true(Buffer.isBuffer(result))
-  t.deepEqual([...(result as Buffer)], [...Buffer.from('h?llo')])
+  t.deepEqual(bytesArray(result), [104, 63, 108, 108, 111])
 })
 
 test('bytes decode ascii backslashreplace', async () => {
@@ -246,8 +252,7 @@ test('nested bytes in dict', async () => {
   const result = await run('{"data": b"abc"}')
   t.true(result instanceof Map)
   const data = (result as Map<string, unknown>).get('data')
-  t.true(Buffer.isBuffer(data))
-  t.deepEqual([...(data as Buffer)], [97, 98, 99])
+  t.deepEqual(bytesArray(data), [97, 98, 99])
 })
 
 test('tuple containing set', async () => {

@@ -3,7 +3,8 @@
 // pydantic_monty's `monty_run` fixture.
 
 import { afterAll as afterEachFile, beforeAll as beforeEachFile } from 'vitest'
-import { Monty, type CheckoutOptions, type FeedOptions } from '../ts/index.js'
+import { kind } from './env.js'
+import { Monty, type CheckoutOptions, type FeedOptions } from '@pydantic/monty'
 
 /** Checkout-level and feed-level options, flattened for convenience. */
 export interface RunOptions extends FeedOptions, CheckoutOptions {}
@@ -22,7 +23,7 @@ export interface PoolFixture {
 export function setupPool(): PoolFixture {
   let pool: Monty | null = null
   beforeEachFile(async () => {
-    pool = await Monty.create()
+    pool = await Monty.create(kind === 'browser' ? { maxCheckoutsPerWorker: 1 } : {})
   })
   afterEachFile(async () => {
     await pool?.close()

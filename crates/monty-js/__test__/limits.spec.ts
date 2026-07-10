@@ -1,7 +1,8 @@
 import { test } from 'vitest'
 import { t } from './assertions.js'
+import { kind } from './env.js'
 
-import { MontyRuntimeError, type ResourceLimits } from '../ts/index.js'
+import { MontyRuntimeError, type ResourceLimits } from '@pydantic/monty'
 import { setupPool } from './helpers.js'
 
 const { run } = setupPool()
@@ -89,7 +90,12 @@ for i in range(1000):
 len(result)
 `
   const error = await t.throwsAsync(() => run(code, { limits: { maxMemory: 100 } }), isRuntimeError)
-  t.is(error.message, 'MemoryError: memory limit exceeded: 220 bytes > 100 bytes')
+  t.is(
+    error.message,
+    kind === 'browser'
+      ? 'MemoryError: memory limit exceeded: 180 bytes > 100 bytes'
+      : 'MemoryError: memory limit exceeded: 220 bytes > 100 bytes',
+  )
 })
 
 test('memory limit accepts values above u32 max', async () => {

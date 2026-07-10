@@ -1,12 +1,7 @@
-// Public API of @pydantic/monty: a pool of crash-isolated `monty`
-// subprocess workers (`Monty`), sessions checked out of it (`MontySession`),
-// filesystem mounts, and the error hierarchy. The interpreter runs in worker
-// subprocesses via the native `monty-pool` binding — a sandbox crash can
-// never take down the host process.
-//
-// The legacy in-process API (the only option on wasm/browsers, where
-// subprocesses do not exist) is exposed separately via the
-// `@pydantic/monty/wasm` subpath.
+// Shared public API of @pydantic/monty. Node resolves this package to the
+// native subprocess backend; browser bundlers resolve it to the wasm Worker
+// backend. Environment-specific APIs live under @pydantic/monty/node and
+// @pydantic/monty/wasm.
 
 export { Monty, type CheckoutOptions, type MontyOptions, type ResourceLimits } from './pool.js'
 export {
@@ -25,7 +20,6 @@ export {
   type PrintCallback,
   type Snapshot,
 } from './session.js'
-export { MountDir, type MountDirMode, type MountDirOptions } from './mount.js'
 export {
   MontyCrashedError,
   MontyError,
@@ -44,5 +38,4 @@ export {
   type MontyTimeDelta,
   type MontyTimeZone,
 } from './types.js'
-export { findMontyBinary } from './binary.js'
-export { MAX_VALUE_DEPTH } from '../index.js'
+export { MAX_VALUE_DEPTH } from '../native-addon.js'

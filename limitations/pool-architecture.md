@@ -288,7 +288,3 @@ binaries shipped in platform npm packages. Everything above applies, plus:
   `FutureSnapshot.resume([{callId, value}|{callId, error}])`).
 - Sessions and pools support `await using` (async disposal) in addition to
   explicit `close()`.
-
-For browsers (no subprocesses), the `@pydantic/monty/wasm` subpath keeps the
-old napi in-process API compiled to `wasm32-wasip1-threads`; it has none of
-the crash isolation described here — a sandbox crash is a host crash.

@@ -1,14 +1,9 @@
 import { test } from 'vitest'
 import { t } from './assertions.js'
 
-import {
-  FunctionSnapshot,
-  FutureSnapshot,
-  MontyComplete,
-  NameLookupSnapshot,
-  MontyRuntimeError,
-  MountDir,
-} from '../ts/index.js'
+import { FunctionSnapshot, FutureSnapshot, MontyComplete, MontyRuntimeError, NameLookupSnapshot } from '@pydantic/monty'
+import { MountDir } from '@pydantic/monty/node'
+import { kind } from './env.js'
 import { setupPool } from './helpers.js'
 import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -172,6 +167,24 @@ test('load after a feed is rejected', async () => {
 })
 
 test('mounts are re-supplied to loadSnapshot and validated', async () => {
+  if (kind === 'browser') {
+    const session = await pool().checkout()
+    try {
+      const snap = (await session.feedStart('f()')) as FunctionSnapshot
+      const blob = await snap.dump()
+      const restore = await pool().checkout()
+      try {
+        const error = await t.throwsAsync(() => restore.loadSnapshot(blob, { mount: [{}] as never }))
+        t.is(error.message, 'the wasm worker does not support filesystem mounts (browser has no host filesystem)')
+      } finally {
+        await restore.close()
+      }
+    } finally {
+      await session.close()
+    }
+    return
+  }
+
   const dir = await mkdtemp(join(tmpdir(), 'monty-js-snap-'))
   await writeFile(join(dir, 'hello.txt'), 'hi')
   const mount = new MountDir('/data', dir, { mode: 'read-only' })
