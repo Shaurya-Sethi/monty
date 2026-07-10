@@ -69,6 +69,11 @@ fn collect_streams_respects_max_bytes() {
 
     let total: usize = streams.iter().map(|(_, s)| s.len()).sum();
     assert_eq!(err.exc_type(), ExcType::MemoryError);
+    let expected = format!(
+        "memory limit exceeded: {} bytes > {LIMIT_BYTES} bytes",
+        LIMIT_BYTES + CHUNK_REPS
+    );
+    assert_eq!(err.message(), Some(expected.as_str()));
     assert!(total <= LIMIT_BYTES, "buffer must stay at or under cap, got {total}");
     assert_eq!(total, LIMIT_BYTES);
 }

@@ -35,7 +35,7 @@ underneath (see [sys.md](sys.md)).
 
 `CollectString` and `CollectStreams` (Rust `PrintWriter` variants and the
 matching `pydantic_monty` collectors) accumulate print output in **host-side**
-buffers. That growth is **not** covered by checkout
+buffers. That growth is **not** covered by
 `ResourceLimits.max_memory` (heap-only, and in the pool only on the worker).
 
 - Default cap: **10 MiB** (`DEFAULT_MAX_PRINT_COLLECT_BYTES`).
@@ -43,5 +43,9 @@ buffers. That growth is **not** covered by checkout
   `memory limit exceeded: {used} bytes > {limit} bytes` (same wording as
   heap `ResourceError::Memory`).
 - Pass `max_bytes=None` to disable the cap (trusted hosts only).
+- Python `CollectStreams` also charges a fixed per-entry overhead toward the
+  cap (many tiny fragments would otherwise OOM the host before payload bytes
+  hit the limit). Rust `PrintWriter::CollectStreams` merges consecutive
+  same-stream fragments, so entry count stays small for normal `print()`.
 - `Stdout` / `Disabled` / `Callback` are unchanged — `Callback` hosts can
   already self-limit by returning an error.

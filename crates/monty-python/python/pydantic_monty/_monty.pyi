@@ -51,6 +51,7 @@ class CollectStreams:
 
     Defaults to a 10 MiB cap. Pass `max_bytes=None` to disable (trusted hosts).
     Exceeding the cap raises `MemoryError`. Not covered by `ResourceLimits.max_memory`.
+    The cap includes a fixed per-entry overhead (many tiny fragments).
     """
 
     def __new__(cls, max_bytes: int | None = 10 * 1024 * 1024) -> CollectStreams: ...

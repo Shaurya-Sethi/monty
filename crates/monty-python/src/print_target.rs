@@ -31,10 +31,19 @@ use pyo3::{
     types::{PyList, PyString},
 };
 
+/// Host bytes charged per retained `(stream, text)` entry beyond the payload.
+///
+/// `String` / `Vec` bookkeeping is not free: many tiny prints can exhaust the
+/// host long before payload bytes hit the cap. Charged toward `max_bytes`.
+const COLLECT_STREAMS_ENTRY_OVERHEAD: usize = 64;
+
 /// Shared collect-streams state: labelled fragments plus optional byte cap.
 #[derive(Debug)]
 pub(crate) struct CollectStreamsState {
     output: Vec<(PrintStream, String)>,
+    /// Running charge: payload UTF-8 bytes plus [`COLLECT_STREAMS_ENTRY_OVERHEAD`]
+    /// per retained entry. Avoids O(n) rescans on each print event.
+    collected_bytes: usize,
     max_bytes: Option<usize>,
 }
 
@@ -66,7 +75,9 @@ type CollectStringBuffer = Arc<Mutex<CollectStringState>>;
 /// accumulating into the same collector.
 ///
 /// Defaults to a [`DEFAULT_MAX_PRINT_COLLECT_BYTES`] cap; `max_bytes=None`
-/// disables the limit (trusted hosts only).
+/// disables the limit (trusted hosts only). The cap includes a fixed per-entry
+/// overhead so many tiny fragments cannot exhaust the host before payload bytes
+/// hit the limit.
 #[pyclass(name = "CollectStreams", module = "pydantic_monty", frozen)]
 #[derive(Debug)]
 pub struct PyCollectStreams {
@@ -82,6 +93,7 @@ impl PyCollectStreams {
         Self {
             buffer: Arc::new(Mutex::new(CollectStreamsState {
                 output: Vec::new(),
+                collected_bytes: 0,
                 max_bytes,
             })),
         }
@@ -275,9 +287,10 @@ impl PrintTarget {
             .map_err(|e| Python::attach(|py| exc_py_to_monty(py, &e))),
             Self::CollectStreams(buf) => {
                 let mut state = buf.lock().unwrap_or_else(PoisonError::into_inner);
-                let current = state.output.iter().map(|(_, s)| s.len()).sum();
-                check_print_collect_limit(current, text.len(), state.max_bytes)?;
+                let add = text.len().saturating_add(COLLECT_STREAMS_ENTRY_OVERHEAD);
+                check_print_collect_limit(state.collected_bytes, add, state.max_bytes)?;
                 state.output.push((stream, text.to_owned()));
+                state.collected_bytes = state.collected_bytes.saturating_add(add);
                 Ok(())
             }
             Self::CollectString(buf) => {
