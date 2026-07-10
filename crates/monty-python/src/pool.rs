@@ -135,8 +135,10 @@ impl PyMonty {
         limits = None,
         type_check = false,
         type_check_stubs = None,
+        assert_message_annotations = true,
         dataclass_registry = None,
     ))]
+    #[expect(clippy::too_many_arguments)]
     fn checkout(
         &self,
         py: Python<'_>,
@@ -144,11 +146,19 @@ impl PyMonty {
         limits: Option<&Bound<'_, PyDict>>,
         type_check: bool,
         type_check_stubs: Option<&Bound<'_, PyString>>,
+        assert_message_annotations: bool,
         dataclass_registry: Option<&Bound<'_, PyList>>,
     ) -> PyResult<PyMontySession> {
         Ok(PyMontySession {
             pool: Arc::clone(&self.pool),
-            repl_config: parse_repl_config(py, script_name, limits, type_check, type_check_stubs)?,
+            repl_config: parse_repl_config(
+                py,
+                script_name,
+                limits,
+                type_check,
+                type_check_stubs,
+                assert_message_annotations,
+            )?,
             dc_registry: DcRegistry::from_list(py, dataclass_registry)?,
             checkout: Arc::new(Mutex::new(None)),
             used: AtomicBool::new(false),
@@ -504,8 +514,10 @@ impl PyAsyncMonty {
         limits = None,
         type_check = false,
         type_check_stubs = None,
+        assert_message_annotations = true,
         dataclass_registry = None,
     ))]
+    #[expect(clippy::too_many_arguments)]
     fn checkout(
         &self,
         py: Python<'_>,
@@ -513,11 +525,19 @@ impl PyAsyncMonty {
         limits: Option<&Bound<'_, PyDict>>,
         type_check: bool,
         type_check_stubs: Option<&Bound<'_, PyString>>,
+        assert_message_annotations: bool,
         dataclass_registry: Option<&Bound<'_, PyList>>,
     ) -> PyResult<PyAsyncMontySession> {
         Ok(PyAsyncMontySession {
             pool: Arc::clone(&self.pool),
-            repl_config: parse_repl_config(py, script_name, limits, type_check, type_check_stubs)?,
+            repl_config: parse_repl_config(
+                py,
+                script_name,
+                limits,
+                type_check,
+                type_check_stubs,
+                assert_message_annotations,
+            )?,
             dc_registry: DcRegistry::from_list(py, dataclass_registry)?,
             checkout: Arc::new(Mutex::new(None)),
             used: AtomicBool::new(false),
@@ -606,8 +626,10 @@ impl PyAsyncMontyWebsocket {
         limits = None,
         type_check = false,
         type_check_stubs = None,
+        assert_message_annotations = true,
         dataclass_registry = None,
     ))]
+    #[expect(clippy::too_many_arguments)]
     fn checkout(
         &self,
         py: Python<'_>,
@@ -615,11 +637,19 @@ impl PyAsyncMontyWebsocket {
         limits: Option<&Bound<'_, PyDict>>,
         type_check: bool,
         type_check_stubs: Option<&Bound<'_, PyString>>,
+        assert_message_annotations: bool,
         dataclass_registry: Option<&Bound<'_, PyList>>,
     ) -> PyResult<PyAsyncMontySession> {
         Ok(PyAsyncMontySession {
             pool: Arc::clone(&self.pool),
-            repl_config: parse_repl_config(py, script_name, limits, type_check, type_check_stubs)?,
+            repl_config: parse_repl_config(
+                py,
+                script_name,
+                limits,
+                type_check,
+                type_check_stubs,
+                assert_message_annotations,
+            )?,
             dc_registry: DcRegistry::from_list(py, dataclass_registry)?,
             checkout: Arc::new(Mutex::new(None)),
             used: AtomicBool::new(false),
@@ -993,12 +1023,14 @@ pub(crate) fn parse_repl_config(
     limits: Option<&Bound<'_, PyDict>>,
     type_check: bool,
     type_check_stubs: Option<&Bound<'_, PyString>>,
+    assert_message_annotations: bool,
 ) -> PyResult<ReplConfig> {
     Ok(ReplConfig {
         script_name: script_name.to_owned(),
         limits: limits.map(extract_limits).transpose()?,
         type_check,
         type_check_stubs: extract_type_check_stubs(py, type_check_stubs)?,
+        assert_message_annotations,
     })
 }
 
