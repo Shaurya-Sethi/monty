@@ -198,6 +198,14 @@ export class MontySession {
         case 'protocol':
           throw this.poison(new ProtocolError(turn.message))
       }
+      // Print failures take precedence. On a suspension the worker is waiting
+      // for a resume we will never send — poison so the next feed fails cleanly
+      // (matches Python pool: discard checkout when print fails mid-suspend).
+      try {
+        printTarget.throwIfFailed()
+      } catch (err) {
+        throw this.poison(err instanceof Error ? err : new Error(String(err)))
+      }
       try {
         turn = await answerer.answer(turn, onPrint)
       } catch (err) {
@@ -674,19 +682,36 @@ class SnapshotDriver {
           // With no os handler an OS call surfaces as a snapshot; otherwise it
           // is auto-dispatched through the same path `resumeAuto` uses.
           if (this.answerer.os === undefined) {
+            this.throwIfPrintFailedOnSuspend()
             return new FunctionSnapshot(this, turn, true)
           }
           turn = (await this.answerer.answerOsCall(turn, this.onPrint)) as NativeTurn
           continue
         case 'functionCall':
+          this.throwIfPrintFailedOnSuspend()
           return new FunctionSnapshot(this, turn, false)
         case 'nameLookup':
+          this.throwIfPrintFailedOnSuspend()
           return new NameLookupSnapshot(this, turn)
         case 'resolveFutures':
+          this.throwIfPrintFailedOnSuspend()
           return new FutureSnapshot(this, turn)
         default:
           throw this.poison(new ProtocolError(`unexpected turn kind: ${(turn as { kind: string }).kind}`))
       }
+    }
+  }
+
+  /**
+   * Surfaces a pending print-callback failure before exposing a suspension
+   * snapshot. The worker is left suspended with no resume coming, so poison
+   * the session (same policy as Python's checkout discard on this path).
+   */
+  private throwIfPrintFailedOnSuspend(): void {
+    try {
+      this.printTarget.throwIfFailed()
+    } catch (err) {
+      throw this.poison(err instanceof Error ? err : new Error(String(err)))
     }
   }
 

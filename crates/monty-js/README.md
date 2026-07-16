@@ -171,8 +171,9 @@ streams.output // [{ stream: 'stdout', text: 'hello\n' }]
 
 Both collectors default to a **10 MiB** cap (`DEFAULT_MAX_PRINT_COLLECT_BYTES`).
 Pass `maxBytes: null` to disable (trusted hosts only). `maxBytes` must be a
-finite non-negative number or `null`. Exceeding the cap rejects the feed with
-`MontyRuntimeError` / `MemoryError` (`memory limit exceeded: …`).
+finite non-negative number or `null` (constructors throw `TypeError` otherwise).
+Exceeding the cap rejects the feed with `MontyRuntimeError` / `MemoryError`
+(`memory limit exceeded: …`).
 
 ## Filesystem Mounts
 

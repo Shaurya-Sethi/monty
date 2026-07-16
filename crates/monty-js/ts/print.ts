@@ -39,12 +39,23 @@ function checkPrintCollectLimit(current: number, add: number, maxBytes: number |
 }
 
 /**
+ * Normalize constructor `maxBytes`: only `null` disables the cap.
+ * Rejects NaN/Infinity (which would make `used > maxBytes` never true) and negatives.
+ */
+function resolveMaxBytes(maxBytes: number | null): number | null {
+  if (maxBytes === null) return null
+  if (typeof maxBytes !== 'number' || !Number.isFinite(maxBytes) || maxBytes < 0) {
+    throw new TypeError('maxBytes must be a finite non-negative number or null')
+  }
+  return maxBytes
+}
+
+/**
  * Accumulates print fragments into one string. Pass as `printCallback`.
  * Default cap: DEFAULT_MAX_PRINT_COLLECT_BYTES. Pass maxBytes: null to disable.
  * Host-side only — not covered by ResourceLimits.maxMemory.
  *
- * `maxBytes` must be a finite non-negative number or `null`. NaN/Infinity make
- * the check never fire (effectively unlimited); negatives reject almost every write.
+ * `maxBytes` must be a finite non-negative number or `null` (validated at construction).
  */
 export class CollectString {
   private buf = ''
@@ -52,7 +63,7 @@ export class CollectString {
   private readonly maxBytes: number | null
 
   constructor(maxBytes: number | null = DEFAULT_MAX_PRINT_COLLECT_BYTES) {
-    this.maxBytes = maxBytes
+    this.maxBytes = resolveMaxBytes(maxBytes)
   }
 
   /** Collected text so far (does not drain). Safe to read mid-feed or between feeds. */
@@ -93,7 +104,7 @@ export class CollectStreams {
   private readonly maxBytes: number | null
 
   constructor(maxBytes: number | null = DEFAULT_MAX_PRINT_COLLECT_BYTES) {
-    this.maxBytes = maxBytes
+    this.maxBytes = resolveMaxBytes(maxBytes)
   }
 
   /** Collected fragments so far (cloned entries so callers cannot mutate internal state). */

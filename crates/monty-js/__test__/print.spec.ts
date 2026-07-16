@@ -278,3 +278,57 @@ test('CollectString reuses across feeds', async () => {
   }
   t.is(collector.output, 'first\nsecond\n')
 })
+
+test('CollectString/CollectStreams reject invalid maxBytes', () => {
+  for (const bad of [NaN, Infinity, -Infinity, -1] as const) {
+    const msg = t.throws(() => new CollectString(bad)).message
+    t.is(msg, 'maxBytes must be a finite non-negative number or null')
+    t.is(t.throws(() => new CollectStreams(bad)).message, msg)
+  }
+  // null still opts out
+  const unlimited = new CollectString(null)
+  unlimited.write('stdout', 'x'.repeat(200))
+  t.is(unlimited.output.length, 200)
+})
+
+test('print collect cap fails before feedStart returns a snapshot', async () => {
+  // print then suspend: MemoryError must surface immediately, not after resume.
+  const collector = new CollectString(10)
+  const session = await pool().checkout()
+  try {
+    const thrown = await t.throwsAsync<MontyRuntimeError>(() =>
+      session.feedStart("print('x' * 100)\nfetch()", {
+        printCallback: collector,
+        externalLookup: { fetch: () => 1 },
+      }),
+    )
+    t.true(thrown instanceof MontyRuntimeError)
+    t.is(thrown.exception.typeName, 'MemoryError')
+    t.true(thrown.exception.message.startsWith('memory limit exceeded:'))
+    // session poisoned (worker left suspended with no resume)
+    const next = await t.throwsAsync(() => session.feedRun('1 + 1'))
+    t.true(next instanceof MontyRuntimeError)
+    t.is((next as MontyRuntimeError).exception.typeName, 'MemoryError')
+  } finally {
+    await session.close()
+  }
+})
+
+test('print collect cap fails before feedRun answers a suspension', async () => {
+  const collector = new CollectString(10)
+  const session = await pool().checkout()
+  try {
+    const thrown = await t.throwsAsync<MontyRuntimeError>(() =>
+      session.feedRun("print('x' * 100)\nfetch()", {
+        printCallback: collector,
+        externalLookup: { fetch: () => 1 },
+      }),
+    )
+    t.true(thrown instanceof MontyRuntimeError)
+    t.is(thrown.exception.typeName, 'MemoryError')
+    const next = await t.throwsAsync(() => session.feedRun('1 + 1'))
+    t.true(next instanceof MontyRuntimeError)
+  } finally {
+    await session.close()
+  }
+})
