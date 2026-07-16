@@ -30,6 +30,7 @@ import type {
   OsCallTurn,
   ResolveFuturesTurn,
 } from './native.js'
+import { CollectString, CollectStreams } from './print.js'
 
 /**
  * Sentinel an `os` callback returns to decline a call: the sandbox then
@@ -50,6 +51,12 @@ export type OsCallback = (name: string, args: unknown[], kwargs: Record<string, 
 /** Receives sandbox `print()` output (line-buffered). */
 export type PrintCallback = (stream: 'stdout' | 'stderr', text: string) => void
 
+/**
+ * Values accepted by `printCallback` options (function or host collectors).
+ * Mirrors pydantic_monty's PrintCallback union.
+ */
+export type PrintTargetInput = PrintCallback | CollectString | CollectStreams
+
 /** Options for [`MontySession.feedRun`]. */
 export interface FeedOptions {
   /** Values bound as globals before the snippet runs. */
@@ -65,7 +72,7 @@ export interface FeedOptions {
    */
   externalLookup?: Record<string, unknown>
   /** Receives `print()` output; defaults to the host process stdout/stderr. */
-  printCallback?: PrintCallback
+  printCallback?: PrintTargetInput
   /** Host directories mounted into the sandbox for this feed. */
   mount?: MountDir | MountDir[]
   /** Handler for OS calls not covered by mounts. */
@@ -91,7 +98,7 @@ export interface FeedStartOptions {
    */
   externalLookup?: Record<string, unknown>
   /** Receives `print()` output; defaults to the host process stdout/stderr. */
-  printCallback?: PrintCallback
+  printCallback?: PrintTargetInput
   /** Host directories mounted into the sandbox for this feed. */
   mount?: MountDir | MountDir[]
   /** Handler for OS calls not covered by mounts; auto-dispatched between
@@ -105,7 +112,7 @@ export interface FeedStartOptions {
 /** Options for [`MontySession.loadSnapshot`]. */
 export interface LoadSnapshotOptions {
   /** Receives `print()` output from the resumed feed. */
-  printCallback?: PrintCallback
+  printCallback?: PrintTargetInput
   /** The mounts the paused feed used (re-established by value; host paths are
    *  not stored in the dump). Validated against the dump's requirements. */
   mount?: MountDir | MountDir[]
@@ -591,8 +598,13 @@ class PrintTarget {
   private readonly callback: PrintCallback | undefined
   private failure: unknown = null
 
-  constructor(callback: PrintCallback | undefined) {
-    this.callback = callback
+  constructor(input: PrintTargetInput | undefined) {
+    // Collectors adapt once to a function so the drive loop / native path stay typed as PrintCallback.
+    if (input instanceof CollectString || input instanceof CollectStreams) {
+      this.callback = (stream, text) => input.write(stream, text)
+    } else {
+      this.callback = input
+    }
   }
 
   write(stream: 'stdout' | 'stderr', text: string): void {

@@ -47,5 +47,13 @@ buffers. That growth is **not** covered by
   cap (many tiny fragments would otherwise OOM the host before payload bytes
   hit the limit). Rust `PrintWriter::CollectStreams` merges consecutive
   same-stream fragments, so entry count stays small for normal `print()`.
+- JS (`@pydantic/monty`): `CollectString` / `CollectStreams` accept `maxBytes`
+  (camelCase), same 10 MiB default and message; `CollectStreams` charges the
+  same **64-byte** per-entry overhead as the Python host path and does **not**
+  merge consecutive same-stream fragments (unlike Rust in-process
+  `PrintWriter::CollectStreams`). Output entries are `{ stream, text }` objects
+  rather than Python tuples. The cap is a **logical UTF-8 charge**, not a hard
+  V8/host-RSS bound (JS stores strings as UTF-16, so host RSS can exceed the
+  stated cap).
 - `Stdout` / `Disabled` / `Callback` are unchanged — `Callback` hosts can
   already self-limit by returning an error.
