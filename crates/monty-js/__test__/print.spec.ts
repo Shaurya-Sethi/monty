@@ -206,9 +206,7 @@ test('CollectStreams preserves stderr stream label', () => {
 
 test('CollectString maxBytes first write fails', async () => {
   const collector = new CollectString(100)
-  const thrown = await t.throwsAsync<MontyRuntimeError>(() =>
-    run("print('x' * 200)", { printCallback: collector }),
-  )
+  const thrown = await t.throwsAsync<MontyRuntimeError>(() => run("print('x' * 200)", { printCallback: collector }))
   t.true(thrown instanceof MontyRuntimeError)
   t.is(thrown.exception.typeName, 'MemoryError')
   t.is(thrown.exception.message, 'memory limit exceeded: 201 bytes > 100 bytes')
@@ -217,9 +215,7 @@ test('CollectString maxBytes first write fails', async () => {
 
 test('CollectStreams maxBytes first write fails with overhead', async () => {
   const collector = new CollectStreams(100)
-  const thrown = await t.throwsAsync<MontyRuntimeError>(() =>
-    run("print('x' * 200)", { printCallback: collector }),
-  )
+  const thrown = await t.throwsAsync<MontyRuntimeError>(() => run("print('x' * 200)", { printCallback: collector }))
   t.true(thrown instanceof MontyRuntimeError)
   t.is(thrown.exception.typeName, 'MemoryError')
   // 201 payload bytes + 64 entry overhead

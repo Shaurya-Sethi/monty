@@ -34,10 +34,7 @@ function checkPrintCollectLimit(current: number, add: number, maxBytes: number |
   // Caps stay far below Number.MAX_SAFE_INTEGER; plain + is exact for our sizes.
   const used = current + add
   if (used > maxBytes) {
-    throw new MontyRuntimeError(
-      'MemoryError',
-      `memory limit exceeded: ${used} bytes > ${maxBytes} bytes`,
-    )
+    throw new MontyRuntimeError('MemoryError', `memory limit exceeded: ${used} bytes > ${maxBytes} bytes`)
   }
 }
 

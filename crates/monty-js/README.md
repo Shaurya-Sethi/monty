@@ -158,11 +158,7 @@ await session.feedRun('print("hello")', {
 })
 
 // Collectors — accumulate on the host (not covered by ResourceLimits.maxMemory)
-import {
-  CollectString,
-  CollectStreams,
-  DEFAULT_MAX_PRINT_COLLECT_BYTES,
-} from '@pydantic/monty'
+import { CollectString, CollectStreams, DEFAULT_MAX_PRINT_COLLECT_BYTES } from '@pydantic/monty'
 
 const text = new CollectString()
 await session.feedRun('print("hello")', { printCallback: text })
