@@ -67,30 +67,34 @@ class CollectString:
 class MountDir:
     """A mount point mapping a virtual path to a host directory."""
 
-    virtual_path: str
     host_path: str
+    virtual_path: str
     mode: Literal['read-only', 'read-write', 'overlay']
     write_bytes_limit: int | None
     memory_usage_limit: int
 
     def __new__(
         cls,
-        virtual_path: str,
-        host_path: str | Path,
         *,
+        host_path: str | Path,
+        virtual_path: str,
         mode: Literal['read-only', 'read-write', 'overlay'] = 'overlay',
         write_bytes_limit: int | None = None,
         memory_usage_limit: int = 100_000_000,
     ) -> MountDir:
         """Configure a mount point; validation happens here, not at feed time.
 
+        All arguments are keyword-only: mount tools disagree on host-first
+        (docker `-v`) vs virtual-first (nginx `alias`) ordering, so requiring
+        names removes the ambiguity.
+
         Arguments:
-            virtual_path: Absolute POSIX-style path prefix inside the sandbox
-                (e.g. `'/data'`), regardless of host OS. Raises `ValueError`
-                if not absolute.
             host_path: Real host directory to expose. Canonicalized at
                 construction; raises if it doesn't exist or isn't a directory.
                 Sandbox code can never see this path or reach outside it.
+            virtual_path: Absolute POSIX-style path prefix inside the sandbox
+                (e.g. `'/data'`), regardless of host OS. Raises `ValueError`
+                if not absolute.
             mode: `'read-only'` — reads only, writes raise `PermissionError`;
                 `'read-write'` — writes through to the host directory;
                 `'overlay'` (default) — reads fall through to the host, writes
@@ -496,14 +500,16 @@ class MontySession:
                 session was checked out with `type_check=True`.
         """
 
-    def load(self, state: bytes) -> None:
+    def load_session(self, state: bytes) -> None:
         """
-        Restore a dumped **idle** session — bytes from `session.dump()` taken
-        between feeds — so you can keep feeding it. Use `load_snapshot` for a
-        dump taken mid-execution.
+        Restore a session between feeds.
 
-        Valid only on a fresh session, before any feed or load; raises
-        `RuntimeError` otherwise. The dump restores its own `script_name` /
+        This method should take data from `session.dump()` taken when no block of
+        code is running (i.e. between feeds).
+
+        Use `load_snapshot` for a dump taken mid-execution.
+
+        The dump restores its own `script_name` /
         limits / type-check state (the `checkout()` config for those is not
         applied); the dataclass registry from `checkout()` is reused. Raises if
         the dump is actually a suspended snapshot.
@@ -519,9 +525,10 @@ class MontySession:
         os: OsHandler | None = None,
     ) -> SyncSnapshot:
         """
-        Restore a dumped **suspended** snapshot — bytes from `feed_start` +
-        `snapshot.dump()` — and return the re-announced snapshot to resume. Use
-        `load` for a dump taken between feeds.
+        Restore a snapshot generated while a block of code is running (e.g.
+        after `feed_start`) and return the re-announced snapshot to resume.
+
+        Use `load_session` for a dump taken between feeds.
 
         Valid only on a fresh session, before any feed or load; raises
         `RuntimeError` otherwise. The dump restores its own `script_name` /
@@ -805,12 +812,8 @@ class AsyncMontySession:
                 session was checked out with `type_check=True`.
         """
 
-    async def load(self, state: bytes) -> None:
-        """
-        Async counterpart of `MontySession.load`: restores a dumped idle
-        session. Valid only on a fresh session; raises if the dump is actually a
-        suspended snapshot.
-        """
+    async def load_session(self, state: bytes) -> None:
+        """Async counterpart of `MontySession.load_session`: restore a session between feeds."""
 
     async def load_snapshot(
         self,
@@ -822,10 +825,10 @@ class AsyncMontySession:
         os: OsHandler | None = None,
     ) -> AsyncSnapshot:
         """
-        Async counterpart of `MontySession.load_snapshot`: restores a dumped
-        suspended snapshot and resolves to it (whose `resume(...)` /
-        `resume_auto()` is awaitable). Valid only on a fresh session; raises if
-        the dump is actually an idle session.
+        Async counterpart of `MontySession.load_snapshot`.
+
+        Restore a snapshot generated while a block of code is running (e.g.
+        after `feed_start`) and return the re-announced snapshot to resume.
 
         `external_lookup` / `os` are captured for `resume_auto()`, with the same
         restored-snapshot caveats as the sync method (a restored `FutureSnapshot`
