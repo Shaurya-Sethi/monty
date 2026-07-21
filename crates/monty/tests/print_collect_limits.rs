@@ -7,7 +7,9 @@
 //!
 //! Loops stay at ~256 KiB — safe, not a real OOM.
 
-use monty::{ExcType, LimitedTracker, MontyRun, NoLimitTracker, PrintStream, PrintWriter, ResourceLimits};
+use monty::{
+    CompileOptions, ExcType, LimitedTracker, MontyRun, NoLimitTracker, PrintStream, PrintWriter, ResourceLimits,
+};
 
 /// One KiB payload reused across prints so heap growth stays small.
 const CHUNK: &str = "A";
@@ -22,10 +24,13 @@ fn print_loop_code() -> String {
     format!("s = '{CHUNK}' * {CHUNK_REPS}\nfor _ in range({PRINTS}):\n    print(s, end='')\n")
 }
 
+fn monty_run(code: impl Into<String>) -> MontyRun {
+    MontyRun::new(code.into(), "test.py", vec![], CompileOptions::default()).unwrap()
+}
+
 #[test]
 fn collect_string_respects_max_bytes() {
-    let code = print_loop_code();
-    let ex = MontyRun::new(code, "test.py", vec![]).unwrap();
+    let ex = monty_run(print_loop_code());
     let mut output = String::new();
 
     let err = ex
@@ -55,8 +60,7 @@ fn collect_string_respects_max_bytes() {
 
 #[test]
 fn collect_streams_respects_max_bytes() {
-    let code = print_loop_code();
-    let ex = MontyRun::new(code, "test.py", vec![]).unwrap();
+    let ex = monty_run(print_loop_code());
     let mut streams: Vec<(PrintStream, String)> = Vec::new();
 
     let err = ex
@@ -83,8 +87,7 @@ fn collect_streams_respects_max_bytes() {
 /// are from the host buffer cap, not sandbox memory.
 #[test]
 fn disabled_print_stays_under_max_memory() {
-    let code = print_loop_code();
-    let ex = MontyRun::new(code, "test.py", vec![]).unwrap();
+    let ex = monty_run(print_loop_code());
     let limits = ResourceLimits::new().max_memory(LIMIT_BYTES);
 
     let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Disabled);
@@ -94,8 +97,7 @@ fn disabled_print_stays_under_max_memory() {
 /// Opt-out: `max_bytes=None` still allows growth past a 64 KiB would-be cap.
 #[test]
 fn collect_string_unlimited_allows_growth_past_64kib() {
-    let code = print_loop_code();
-    let ex = MontyRun::new(code, "test.py", vec![]).unwrap();
+    let ex = monty_run(print_loop_code());
     let mut output = String::new();
 
     ex.run(vec![], NoLimitTracker, PrintWriter::CollectString(&mut output, None))
@@ -117,7 +119,7 @@ fn collect_string_unlimited_allows_growth_past_64kib() {
 /// (the `end=''` loop tests never push a terminator).
 #[test]
 fn collect_streams_helper_merges_newline_push() {
-    let ex = MontyRun::new("print('hi')".to_owned(), "test.py", vec![]).unwrap();
+    let ex = monty_run("print('hi')");
     let mut streams: Vec<(PrintStream, String)> = Vec::new();
 
     ex.run(vec![], NoLimitTracker, PrintWriter::collect_streams(&mut streams))
@@ -130,7 +132,7 @@ fn collect_streams_helper_merges_newline_push() {
 /// of `append_streams_char`.
 #[test]
 fn collect_streams_empty_print_pushes_newline_entry() {
-    let ex = MontyRun::new("print()".to_owned(), "test.py", vec![]).unwrap();
+    let ex = monty_run("print()");
     let mut streams: Vec<(PrintStream, String)> = Vec::new();
 
     ex.run(vec![], NoLimitTracker, PrintWriter::collect_streams(&mut streams))
@@ -142,7 +144,7 @@ fn collect_streams_empty_print_pushes_newline_entry() {
 /// Cap of 1 byte: `print('a')` writes `'a'` then fails on the newline push.
 #[test]
 fn collect_string_max_bytes_rejects_newline_push() {
-    let ex = MontyRun::new("print('a')".to_owned(), "test.py", vec![]).unwrap();
+    let ex = monty_run("print('a')");
     let mut output = String::new();
 
     let err = ex
@@ -157,7 +159,7 @@ fn collect_string_max_bytes_rejects_newline_push() {
 /// Same as the string case, but through CollectStreams' char-append path.
 #[test]
 fn collect_streams_max_bytes_rejects_newline_push() {
-    let ex = MontyRun::new("print('a')".to_owned(), "test.py", vec![]).unwrap();
+    let ex = monty_run("print('a')");
     let mut streams: Vec<(PrintStream, String)> = Vec::new();
 
     let err = ex

@@ -258,14 +258,19 @@ impl<T: ResourceTracker> OsCall<T> {
         self.snapshot.run(result.into(), print)
     }
 
-    /// Takes the [`OsFunctionCall`] out by value, leaving an
-    /// [`OsFunctionCall::Used`] placeholder so the host can dispatch the
-    /// call without cloning large `WriteText` / `WriteBytes` payloads.
-    /// `self` is still safe to call [`Self::resume`] on; the placeholder
-    /// must not be inspected.
-    #[must_use]
-    pub fn take_function_call(&mut self) -> OsFunctionCall {
-        mem::replace(&mut self.function_call, OsFunctionCall::Used)
+    /// Dispatches the call to `handler` and resumes execution with its result.
+    ///
+    /// `handler` receives the [`OsFunctionCall`] by value, so large
+    /// `WriteText` / `WriteBytes` payloads move into the host without
+    /// cloning. Prefer this over reading [`Self::function_call`] and calling
+    /// [`Self::resume`] separately when the handler consumes the call.
+    pub fn resume_with(
+        self,
+        print: PrintWriter<'_>,
+        handler: impl FnOnce(OsFunctionCall) -> ExtFunctionResult,
+    ) -> Result<RunProgress<T>, MontyException> {
+        let result = handler(self.function_call);
+        self.snapshot.run(result, print)
     }
 
     /// Returns a reference to the resource tracker.
@@ -348,6 +353,7 @@ impl<T: ResourceTracker> NameLookup<T> {
                     reader,
                     &executor.interns,
                     print.reborrow(),
+                    executor.assert_repr_max_bytes,
                 );
 
                 // Resolve the name lookup result with the VM alive
@@ -452,6 +458,7 @@ impl<T: ResourceTracker> ResolveFutures<T> {
                 reader,
                 &executor.interns,
                 PrintWriter::Stdout,
+                executor.assert_repr_max_bytes,
             );
             vm.__force_gc_for_tests();
             vm.snapshot()
@@ -502,6 +509,7 @@ impl<T: ResourceTracker> ResolveFutures<T> {
                     reader,
                     &executor.interns,
                     print.reborrow(),
+                    executor.assert_repr_max_bytes,
                 );
 
                 // Now check for invalid call_ids after VM is restored.
@@ -565,6 +573,7 @@ impl<T: ResourceTracker> Snapshot<T> {
                     reader,
                     &executor.interns,
                     print.reborrow(),
+                    executor.assert_repr_max_bytes,
                 );
 
                 let vm_result = match ext_result {

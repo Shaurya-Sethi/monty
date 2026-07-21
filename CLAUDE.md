@@ -27,9 +27,11 @@ Key rules:
 - **Virtual paths** are always POSIX-style (`/mnt/data/file.txt`), never Windows-style
 - **Host paths** use `std::path::Path`/`PathBuf` which handles OS differences automatically
 - Avoid `#[cfg(unix)]`-only code in the main crate — all features must work on all platforms
-- Tests in `crates/monty/tests/` should be cross-platform; use helper functions for
-  OS-specific APIs like symlink creation (see `symlink_file`/`symlink_dir` in `fs_security.rs`)
-- CI runs `cargo test -p monty --features memory-model-checks` on Linux, macOS, and Windows
+- Tests in `crates/*/tests/` should be cross-platform; use helper functions for
+  OS-specific APIs like symlink creation (see `symlink_file`/`symlink_dir` in
+  `crates/monty-fs/tests/fs_security.rs`)
+- CI runs `cargo test -p monty --features memory-model-checks` and `cargo test -p monty-fs`
+  on Linux, macOS, and Windows
 
 ## Important Security Notice
 
@@ -54,10 +56,15 @@ Possible security risks to consider:
 * information leakage via timing or error messages
 * Python/Javascript/Rust APIs that accidentally allow developers to expose their host to monty code
 
-## Filesystem Mounts (`crates/monty/src/fs/`)
+## Filesystem Mounts (`crates/monty-fs/`)
 
 The `MountTable` allows mounting real host directories into the sandbox at virtual paths,
 with configurable access modes (ReadWrite, ReadOnly, OverlayMemory).
+
+Mounts are HOST-side code: the `monty` interpreter crate performs no filesystem
+I/O and does not depend on `monty-fs`. Sandboxed code suspends with an
+`OsFunctionCall`, which a host holding a `MountTable` (the pool parent, the CLI,
+bindings) services via `MountTable::handle_os_call`.
 
 **CRITICAL SECURITY INVARIANT:** The monty runtime MUST NEVER read, write, or
 obtain any information about any file or directory outside the specific directory
@@ -70,8 +77,9 @@ that is mounted. This is enforced by:
 - `Resolve` and `Absolute` returning virtual paths, never host paths
 - Null byte rejection in all paths
 
-All path resolution goes through `fs::path_security::resolve_path()` which is
-the sole security boundary. **Changes to `path_security.rs` require careful security review.**
+All path resolution goes through `path_security::resolve_path()` (in
+`crates/monty-fs/src/path_security.rs`) which is the sole security boundary.
+**Changes to `path_security.rs` require careful security review.**
 
 `heap.rs` and `path_security.rs` are the two most security-critical files in the codebase.
 
@@ -112,6 +120,14 @@ The contract for crash detection: a child that exits or EOFs *without* a
 ## Bytecode VM Architecture
 
 Monty is implemented as a bytecode VM, same as CPython.
+
+### Opcode space is scarce
+
+Opcodes serialize as a single byte, so the `Opcode` enum (`crates/monty/src/bytecode/op.rs`)
+is hard-capped at 256 variants and roughly half are already taken. Use slots sparingly:
+prefer a flags/operand encoding on one opcode (e.g. `Assert`/`FormatValue`) over a family
+of near-identical opcodes, unless the instruction is hot enough that decoding the
+discriminating operand would cost measurable dispatch time.
 
 ### HeapReader API — Safe Heap Access
 
@@ -272,8 +288,6 @@ make test-js              Test the JS package (builds the monty binary the worke
 make dev-py-release       Install the python package for development with a release build
 make build-wasm           Build the lean wasm worker module (requires the wasm32-wasip1 target)
 make test-wasm            Test the wasm worker pool/transport (requires a prior build-wasm)
-make build-cpython-image  Build the monty-cpython docker image (locally by default)
-make upload-cpython-image Build the monty-cpython docker image and push to ghcr.io/pydantic/monty-cpython
 make dev-py-pgo           Install the python package for development with profile-guided optimization
 make format-rs            Format Rust code with fmt
 make format-py            Format Python code - WARNING be careful about this command as it may modify code and break tests silently!
@@ -430,19 +444,26 @@ Commands:
 # Build the project
 cargo build
 
-# Run tests (this is the best way to run all tests as it enables the memory-model-checks feature)
-make test-memory-model-checks
+# Run tests
+cargo test -p monty
 
 # Run crates/monty/test_cases tests only
 make test-cases
 
 # Run a specific test
-cargo test -p monty --test TEST --features memory-model-checks str__ops
-cargo run -p monty-datatest --features memory-model-checks str__ops
+cargo test -p monty --test TEST str__ops
+cargo run -p monty-datatest str__ops
 
 # Run the interpreter on a Python file
 cargo run -- <file.py>
 ```
+
+The `memory-model-checks` feature (`make test-memory-model-checks`, or
+`--features memory-model-checks` on the commands above) is VERY SLOW — it is
+run in CI, so do NOT enable it by default. Only reach for it when a change
+specifically touches refcount/heap/GC behavior (e.g. new opcodes that retain
+values, `drop_with` paths, cycle collection) and then run just the relevant
+test binary, e.g. `cargo test -p monty --test TEST --features memory-model-checks`.
 
 See more test commands above.
 
@@ -470,15 +491,21 @@ ALWAYS consolidate related tests into single files using multiple `assert` state
 ```python
 # === Section name ===
 # brief comment if needed
-assert condition, 'descriptive message'
-assert another_condition, 'another descriptive message'
+assert condition
+assert another_condition
 
 # === Next section ===
 x = setup_value
-assert x == expected, 'test description'
+assert x == expected
 ```
 
-Each `assert` should have a descriptive message.
+Do NOT add messages to `assert` statements — Monty's assert message annotations
+(see `limitations/assert.md`) already show the failing values, so a hand-written
+message is clutter. The ONE exception: tests whose failure would show nothing,
+i.e. `assert False` sentinels in try/except blocks (`assert False, 'expected
+TypeError'`) and tests that evaluate to a bare bool (`not` expressions, chained
+comparisons, boolean ops) — there a message is required since introspection
+shows nothing.
 
 Do NOT Write tests like `assert 'thing' in msg` it's lazy and inexact unless explicitly told to do so, instead write tests like `assert msg == 'expected message'` to ensure clarity and accuracy and most importantly, to identify differences between Monty and CPython.
 

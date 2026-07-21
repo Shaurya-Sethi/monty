@@ -7,6 +7,7 @@
 import { availableParallelism } from 'node:os'
 import { NativePool } from '../native-addon.js'
 import { findMontyBinary } from './binary.js'
+import { type AssertMessageAnnotations, encodeAssertMessageAnnotations } from './options.js'
 import { MontySession } from './session.js'
 
 /** Options for [`Monty`]. */
@@ -36,8 +37,8 @@ export interface MontyOptions {
    * limit, the worker reports cumulative execution time each turn (the
    * sandbox clock runs only while the interpreter executes, never while
    * suspended on the host) and the host kills the worker this long after the
-   * budget expires — covering cases the in-sandbox limit cannot catch, like a
-   * blocking syscall inside a mount. Surfaces as `MontyCrashedError`
+   * budget expires — covering cases the in-sandbox limit cannot catch (its
+   * check only runs at interpreter checkpoints). Surfaces as `MontyCrashedError`
    * (`timedOut: true`), losing the session. `requestTimeout` is independent.
    */
   durationLimitGrace?: number | null
@@ -55,6 +56,14 @@ export interface CheckoutOptions {
   typeCheck?: boolean
   /** Stub file contents used by type checking. */
   typeCheckStubs?: string
+  /**
+   * Give failed `assert` statements pytest-style introspected messages, e.g.
+   * `AssertionError: assert 2 == 5` — a deliberate divergence from CPython's
+   * empty bare `AssertionError` (see limitations/assert.md). Default true; set
+   * false to disable annotations, or an integer >= 1 to customize the
+   * per-operand repr truncation length (default 120 bytes).
+   */
+  assertMessageAnnotations?: AssertMessageAnnotations
 }
 
 /** Sandbox resource limits. Omitted fields mean "unlimited". */
@@ -112,11 +121,13 @@ export class Monty {
     if (this.closed) {
       throw new Error('the pool is closed — create a new Monty pool')
     }
+    const assertAnnotations = encodeAssertMessageAnnotations(options.assertMessageAnnotations)
     const native = this.native.checkout({
       scriptName: options.scriptName ?? 'main.py',
       ...(options.limits !== undefined ? { limits: options.limits } : {}),
       typeCheck: options.typeCheck ?? false,
       ...(options.typeCheckStubs !== undefined ? { typeCheckStubs: options.typeCheckStubs } : {}),
+      ...(assertAnnotations !== undefined ? { assertMessageAnnotations: assertAnnotations } : {}),
     })
     await native.enter()
     return new MontySession(native)

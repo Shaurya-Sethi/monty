@@ -1,9 +1,14 @@
-use std::{
-    cell::Cell,
-    error::Error,
-    fmt,
-    time::{Duration, Instant},
-};
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+use std::time::Instant;
+use std::{cell::Cell, error::Error, fmt, time::Duration};
+
+// `std::time::Instant::now()` panics ("time not implemented on this platform")
+// on `wasm32-unknown-unknown`, so any `max_duration` limit aborts there. Swap in
+// `web_time::Instant` (a `performance.now()`-backed drop-in) only for that
+// target; every other target (native, WASI) keeps std, so the `web-time`
+// dependency is pulled in only where it's needed (see Cargo.toml).
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+use web_time::Instant;
 
 use crate::{
     ExcType, MontyException,

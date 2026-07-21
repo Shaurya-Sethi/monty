@@ -25,11 +25,11 @@ use std::{
 use ahash::AHashMap;
 use chrono::{Datelike, Timelike};
 use monty::{
-    ExcType, ExtFunctionResult, FileMode, LimitedTracker, MontyDate, MontyDateTime, MontyException, MontyFileHandle,
-    MontyObject, MontyRun, NameLookupResult, OsFunctionCall, PrintWriter, ResourceLimits, RunProgress, dir_stat,
-    file_stat,
-    fs::{MountMode, MountTable, OverlayState},
+    CompileOptions, ExcType, ExtFunctionResult, FileMode, LimitedTracker, MontyDate, MontyDateTime, MontyException,
+    MontyFileHandle, MontyObject, MontyRun, MontyTimeZone, NameLookupResult, OsFunctionCall, PrintWriter,
+    ResourceLimits, RunProgress, dir_stat, file_stat,
 };
+use monty_fs::{MountCallOutcome, MountMode, MountTable, OverlayState};
 use pyo3::{prelude::*, types::PyDict};
 use similar::TextDiff;
 
@@ -65,6 +65,14 @@ const TEST_RECURSION_LIMIT: usize = 50;
 /// timeout opt into it via `# gc-interval=<N>`.
 fn default_test_limits() -> ResourceLimits {
     ResourceLimits::new().max_recursion_depth(Some(TEST_RECURSION_LIMIT))
+}
+
+/// Builds a `MontyRun` with production-default [`CompileOptions`] so fixtures
+/// exercise the same bytecode real embedders run. Fixtures with a *failing*
+/// assert whose message diverges from CPython can't live in `test_cases/` —
+/// they belong in `crates/monty/tests/assert_messages.rs`.
+fn new_monty_run(code: &str, test_name: &str) -> Result<MontyRun, MontyException> {
+    MontyRun::new(code.to_owned(), test_name, vec![], CompileOptions::default())
 }
 
 /// Test configuration parsed from directive comments.
@@ -931,7 +939,7 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
             day: 15,
         })
         .into(),
-        OsFunctionCall::DateTimeNow(tz) => dispatch_datetime_now(tz).into(),
+        OsFunctionCall::DateTimeNow(tz) => dispatch_datetime_now(tz.as_ref()).into(),
         OsFunctionCall::GetEnviron => {
             let env_dict = vec![
                 (
@@ -1215,7 +1223,6 @@ fn dispatch_os_call(call: &OsFunctionCall) -> ExtFunctionResult {
                 .into()
             }
         }
-        OsFunctionCall::Used => unreachable!("OsFunctionCall::Used dispatched"),
     }
 }
 
@@ -1227,9 +1234,9 @@ const DATETIME_FIXTURE_TIMESTAMP: i64 = 1_700_000_000;
 /// The `tz` argument determines whether a naive or aware datetime is returned.
 /// The deterministic timestamp is 1_700_000_000 UTC (2023-11-14 22:13:20 UTC).
 /// For naive datetimes the virtual local offset is UTC+02:00.
-fn dispatch_datetime_now(tz: &MontyObject) -> MontyObject {
+fn dispatch_datetime_now(tz: Option<&MontyTimeZone>) -> MontyObject {
     match tz {
-        MontyObject::None => {
+        None => {
             // Naive datetime: apply local offset to get local wall-clock time
             // 1_700_000_000 UTC + 7200 = 2023-11-15 00:13:20 local
             MontyObject::DateTime(MontyDateTime {
@@ -1244,7 +1251,7 @@ fn dispatch_datetime_now(tz: &MontyObject) -> MontyObject {
                 timezone_name: None,
             })
         }
-        MontyObject::TimeZone(tz) => {
+        Some(tz) => {
             // Aware datetime: convert UTC timestamp to the requested timezone
             let offset_delta = chrono::TimeDelta::try_seconds(i64::from(tz.offset_seconds)).expect("valid offset");
             let utc = chrono::DateTime::from_timestamp(DATETIME_FIXTURE_TIMESTAMP, 0).expect("valid timestamp");
@@ -1261,7 +1268,6 @@ fn dispatch_datetime_now(tz: &MontyObject) -> MontyObject {
                 timezone_name: tz.name.clone(),
             })
         }
-        _ => panic!("DateTimeNow: tz argument must be None or TimeZone, got {tz:?}"),
     }
 }
 
@@ -1325,7 +1331,7 @@ fn try_run_test(path: &Path, code: &str, expectation: &Expectation, limits: Reso
     // Handle ref-count-return tests separately since they need run_ref_counts()
     #[cfg(feature = "ref-count-return")]
     if let Expectation::RefCounts(expected) = expectation {
-        match MontyRun::new(code.to_owned(), &test_name, vec![]) {
+        match new_monty_run(code, &test_name) {
             Ok(ex) => {
                 let result = ex.run_ref_counts(vec![]);
                 match result {
@@ -1375,7 +1381,7 @@ fn try_run_test(path: &Path, code: &str, expectation: &Expectation, limits: Reso
         }
     }
 
-    match MontyRun::new(code.to_owned(), &test_name, vec![]) {
+    match new_monty_run(code, &test_name) {
         Ok(ex) => {
             let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
             match result {
@@ -1527,7 +1533,7 @@ fn try_run_iter_test(
         });
     }
 
-    let exec = match MontyRun::new(code.to_owned(), &test_name, vec![]) {
+    let exec = match new_monty_run(code, &test_name) {
         Ok(e) => e,
         Err(parse_err) => {
             if let Expectation::Raise(expected) = expectation {
@@ -1673,7 +1679,7 @@ fn try_run_mount_fs_test(
         )
         .expect("failed to mount temp dir for mount-fs test");
 
-    let exec = match MontyRun::new(code.to_owned(), &test_name, vec![]) {
+    let exec = match new_monty_run(code, &test_name) {
         Ok(e) => e,
         Err(parse_err) => {
             return Err(TestFailure {
@@ -1764,16 +1770,12 @@ fn run_mount_fs_iter_loop(
             }
             RunProgress::OsCall(call) => {
                 // Dispatch through the mount table first.
-                let result = mount_table.handle_os_call(&call.function_call);
-                let ext_result = match result {
-                    Some(Ok(obj)) => ExtFunctionResult::Return(obj),
-                    Some(Err(err)) => ExtFunctionResult::Error(err.into_exception()),
-                    None => {
-                        // Non-filesystem operation — dispatch to the regular handler.
-                        dispatch_os_call(&call.function_call)
-                    }
-                };
-                progress = call.resume(ext_result, PrintWriter::Stdout)?;
+                progress = call.resume_with(PrintWriter::Stdout, |fc| match mount_table.handle_os_call(fc) {
+                    MountCallOutcome::Handled(Ok(obj)) => ExtFunctionResult::Return(obj),
+                    MountCallOutcome::Handled(Err(err)) => ExtFunctionResult::Error(err.into_exception()),
+                    // Non-filesystem operation — dispatch to the regular handler.
+                    MountCallOutcome::NotHandled(function_call) => dispatch_os_call(&function_call),
+                })?;
             }
         }
     }

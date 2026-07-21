@@ -4,7 +4,6 @@
 //! for the parent.
 
 use std::{
-    fs,
     io::Write,
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     thread,
@@ -66,6 +65,7 @@ impl ChildProc {
             type_check: false,
             type_check_stubs: None,
             monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+            assert_message_annotations: None,
         });
     }
 
@@ -79,19 +79,13 @@ impl ChildProc {
 
     /// Feeds a snippet and returns `(prints, turn-ending event)`.
     fn feed(&mut self, code: &str) -> (Vec<pb::Print>, pb::child_event::Kind) {
-        self.feed_with(code, vec![], vec![])
+        self.feed_with(code, vec![])
     }
 
-    fn feed_with(
-        &mut self,
-        code: &str,
-        inputs: Vec<pb::NamedValue>,
-        mounts: Vec<pb::Mount>,
-    ) -> (Vec<pb::Print>, pb::child_event::Kind) {
+    fn feed_with(&mut self, code: &str, inputs: Vec<pb::NamedValue>) -> (Vec<pb::Print>, pb::child_event::Kind) {
         self.send(pb::parent_request::Kind::Feed(pb::Feed {
             code: code.to_owned(),
             inputs,
-            mounts,
             skip_type_check: false,
         }));
         self.recv_turn()
@@ -186,7 +180,7 @@ fn inputs_are_injected() {
         name: "a".to_owned(),
         value: Some(int_value(20)),
     }];
-    let (_, event) = child.feed_with("a + 1", inputs, vec![]);
+    let (_, event) = child.feed_with("a + 1", inputs);
     assert_eq!(expect_complete(event), MontyObject::Int(21));
     child.shutdown();
 }
@@ -288,8 +282,7 @@ fn os_call_bubbles_to_parent_without_mounts() {
     let pb::child_event::Kind::OsCall(call) = event else {
         panic!("expected OsCall, got {event:?}");
     };
-    assert_eq!(call.function_name, "Path.read_text");
-    assert_eq!(call.args, vec![MontyObject::Path("/data.txt".to_owned())]);
+    assert_eq!(call.call, Some(pb::os_call::Call::ReadText("/data.txt".to_owned())));
 
     let (_, event) = child.resume_call(
         call.call_id,
@@ -323,81 +316,6 @@ fn os_call_error_resume_carries_exception() {
 }
 
 // =============================================================================
-// Mounts (child-local filesystem)
-// =============================================================================
-
-#[test]
-fn mounted_reads_are_handled_locally() {
-    let dir = tempfile::tempdir().unwrap();
-    fs::write(dir.path().join("data.txt"), "mounted!").unwrap();
-    let mount = pb::Mount {
-        virtual_path: "/mnt".to_owned(),
-        host_path: dir.path().to_string_lossy().into_owned(),
-        mode: pb::MountMode::ReadOnly.into(),
-        write_bytes_limit: None,
-    };
-
-    let mut child = ChildProc::spawn();
-    child.create_repl();
-    let (_, event) = child.feed_with(
-        "from pathlib import Path\nPath('/mnt/data.txt').read_text()",
-        vec![],
-        vec![mount],
-    );
-    // no OsCall event on the wire — the mount handled it inside the child
-    assert_eq!(expect_complete(event), MontyObject::String("mounted!".to_owned()));
-    child.shutdown();
-}
-
-#[test]
-fn read_only_mount_write_raises_inside_sandbox() {
-    let dir = tempfile::tempdir().unwrap();
-    let mount = pb::Mount {
-        virtual_path: "/mnt".to_owned(),
-        host_path: dir.path().to_string_lossy().into_owned(),
-        mode: pb::MountMode::ReadOnly.into(),
-        write_bytes_limit: None,
-    };
-
-    let mut child = ChildProc::spawn();
-    child.create_repl();
-    let (_, event) = child.feed_with(
-        "from pathlib import Path\nPath('/mnt/new.txt').write_text('x')",
-        vec![],
-        vec![mount],
-    );
-    let error = expect_error(event);
-    assert_eq!(error.exc_type, "PermissionError");
-    child.shutdown();
-}
-
-#[test]
-fn overlay_mount_discards_writes_at_feed_end() {
-    let dir = tempfile::tempdir().unwrap();
-    fs::write(dir.path().join("data.txt"), "original").unwrap();
-    let mount = pb::Mount {
-        virtual_path: "/mnt".to_owned(),
-        host_path: dir.path().to_string_lossy().into_owned(),
-        mode: pb::MountMode::Overlay.into(),
-        write_bytes_limit: None,
-    };
-
-    let mut child = ChildProc::spawn();
-    child.create_repl();
-    let (_, event) = child.feed_with(
-        "from pathlib import Path\nPath('/mnt/data.txt').write_text('changed')\nPath('/mnt/data.txt').read_text()",
-        vec![],
-        vec![mount.clone()],
-    );
-    assert_eq!(expect_complete(event), MontyObject::String("changed".to_owned()));
-    // the host file is untouched and the overlay does not persist to the next feed
-    assert_eq!(fs::read_to_string(dir.path().join("data.txt")).unwrap(), "original");
-    let (_, event) = child.feed_with("Path('/mnt/data.txt').read_text()", vec![], vec![mount]);
-    assert_eq!(expect_complete(event), MontyObject::String("original".to_owned()));
-    child.shutdown();
-}
-
-// =============================================================================
 // Resource limits
 // =============================================================================
 
@@ -413,6 +331,7 @@ fn child_enforces_time_limit() {
         type_check: false,
         type_check_stubs: None,
         monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+        assert_message_annotations: None,
     });
     let (_, event) = child.feed("while True:\n    pass");
     let error = expect_error(event);
@@ -463,6 +382,7 @@ fn type_checked_session_rejects_bad_snippets_and_remembers_good_ones() {
         type_check: true,
         type_check_stubs: None,
         monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+        assert_message_annotations: None,
     });
 
     let (_, event) = child.feed("x: int = 'not an int'");
@@ -514,10 +434,7 @@ fn dump_then_load_into_fresh_child_resumes() {
 
     // a fresh child restores the dump and re-announces the suspension
     let mut fresh = ChildProc::spawn();
-    fresh.send(pb::parent_request::Kind::Load(pb::Load {
-        state: dump.state,
-        mounts: vec![],
-    }));
+    fresh.send(pb::parent_request::Kind::Load(pb::Load { state: dump.state }));
     let (_, event) = fresh.recv_turn();
     let pb::child_event::Kind::FunctionCall(restored) = event else {
         panic!("expected re-emitted FunctionCall after Load, got {event:?}");
@@ -544,6 +461,7 @@ fn type_check_state_survives_dump_and_load() {
         type_check: true,
         type_check_stubs: None,
         monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+        assert_message_annotations: None,
     });
     // a committed snippet that later feeds must see through the dump
     assert_eq!(child.feed_complete("y = 1"), MontyObject::None);
@@ -554,10 +472,7 @@ fn type_check_state_survives_dump_and_load() {
     drop(child);
 
     let mut fresh = ChildProc::spawn();
-    fresh.send(pb::parent_request::Kind::Load(pb::Load {
-        state: dump.state,
-        mounts: vec![],
-    }));
+    fresh.send(pb::parent_request::Kind::Load(pb::Load { state: dump.state }));
     let pb::child_event::Kind::Ok(_) = fresh.recv() else {
         panic!("expected Ok for Load");
     };
@@ -568,6 +483,68 @@ fn type_check_state_survives_dump_and_load() {
     };
     // ... and so did the stubs committed before it
     assert_eq!(fresh.feed_complete("y + 1"), MontyObject::Int(2));
+    fresh.shutdown();
+}
+
+#[test]
+fn assert_annotation_option_survives_dump_and_load() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(pb::Configure {
+        script_name: "main.py".to_owned(),
+        limits: None,
+        type_check: false,
+        type_check_stubs: None,
+        monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+        // 0 = annotations off on the wire.
+        assert_message_annotations: Some(0),
+    });
+    child.send(pb::parent_request::Kind::Dump(pb::Dump {}));
+    let pb::child_event::Kind::DumpResult(dump) = child.recv() else {
+        panic!("expected DumpResult");
+    };
+    drop(child);
+
+    let mut fresh = ChildProc::spawn();
+    fresh.send(pb::parent_request::Kind::Load(pb::Load { state: dump.state }));
+    let pb::child_event::Kind::Ok(_) = fresh.recv() else {
+        panic!("expected Ok for Load");
+    };
+
+    let (_, event) = fresh.feed("assert 1 == 2");
+    let error = expect_error(event);
+    assert_eq!(error.exc_type, "AssertionError");
+    assert_eq!(error.message, None);
+    fresh.shutdown();
+}
+
+#[test]
+fn assert_annotation_custom_limit_survives_dump_and_load() {
+    let mut child = ChildProc::spawn();
+    child.create_repl_with(pb::Configure {
+        script_name: "main.py".to_owned(),
+        limits: None,
+        type_check: false,
+        type_check_stubs: None,
+        monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+        // Non-zero = annotations on, truncating operand reprs to N chars.
+        assert_message_annotations: Some(6),
+    });
+    child.send(pb::parent_request::Kind::Dump(pb::Dump {}));
+    let pb::child_event::Kind::DumpResult(dump) = child.recv() else {
+        panic!("expected DumpResult");
+    };
+    drop(child);
+
+    let mut fresh = ChildProc::spawn();
+    fresh.send(pb::parent_request::Kind::Load(pb::Load { state: dump.state }));
+    let pb::child_event::Kind::Ok(_) = fresh.recv() else {
+        panic!("expected Ok for Load");
+    };
+
+    let (_, event) = fresh.feed("assert 'abcdefghij' == ''");
+    let error = expect_error(event);
+    assert_eq!(error.exc_type, "AssertionError");
+    assert_eq!(error.message.as_deref(), Some("assert 'abcde… == ''"));
     fresh.shutdown();
 }
 
@@ -595,6 +572,7 @@ fn protocol_violations_keep_the_child_alive() {
         type_check: false,
         type_check_stubs: None,
         monty_version: env!("CARGO_PKG_VERSION").to_owned(),
+        assert_message_annotations: None,
     }));
     let error = expect_error(child.recv());
     assert!(error.message.unwrap().contains("already exists"));
@@ -632,6 +610,7 @@ fn version_skew_on_create_is_a_fatal_error() {
         type_check: false,
         type_check_stubs: None,
         monty_version: "0.0.0-not-a-real-version".to_owned(),
+        assert_message_annotations: None,
     }));
     match child.recv() {
         pb::child_event::Kind::FatalError(fatal) => assert!(fatal.message.contains("version skew")),
@@ -671,7 +650,6 @@ fn killed_child_is_detected_as_eof() {
     child.send(pb::parent_request::Kind::Feed(pb::Feed {
         code: "while True:\n    pass".to_owned(),
         inputs: vec![],
-        mounts: vec![],
         skip_type_check: false,
     }));
     thread::sleep(Duration::from_millis(200));

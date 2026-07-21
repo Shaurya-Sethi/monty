@@ -25,7 +25,7 @@ use std::{
 
 use smallvec::SmallVec;
 
-use super::{CmpOrder, MontyIter, PyTrait};
+use super::{CmpOrder, PyTrait, iter::collect_owned_iterable};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
@@ -126,7 +126,7 @@ impl Tuple {
                 Ok(vm.heap.get_empty_tuple())
             }
             Some(v) => {
-                let items = MontyIter::new(v, vm)?.collect(vm)?;
+                let items = collect_owned_iterable(v, vm)?;
                 Ok(allocate_tuple(items, vm.heap)?)
             }
         }
@@ -286,6 +286,10 @@ impl<'h, C: ContainsVM<'h>> DropWithContext<C> for TupleIter<'_, 'h> {
 }
 
 impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
+    fn py_is_iterable(&self, _vm: &VM<'h, impl ResourceTracker>) -> bool {
+        true
+    }
+
     fn py_type(&self, _vm: &VM<'h, impl ResourceTracker>) -> Type {
         Type::Tuple
     }

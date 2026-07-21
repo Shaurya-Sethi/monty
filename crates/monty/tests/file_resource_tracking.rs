@@ -7,7 +7,10 @@
 //! successful read raises `current_memory()` by roughly the file size, and
 //! `close()` drops it back down.
 
-use monty::{ExcType, FileMode, LimitedTracker, MontyFileHandle, MontyObject, MontyRun, PrintWriter, ResourceLimits};
+use monty::{
+    CompileOptions, ExcType, FileMode, LimitedTracker, MontyFileHandle, MontyObject, MontyRun, PrintWriter,
+    ResourceLimits,
+};
 
 fn file_handle(path: &str, mode: &str) -> MontyFileHandle {
     MontyFileHandle {
@@ -30,12 +33,12 @@ fn open_then_read(
     io_result: MontyObject,
     limits: ResourceLimits,
 ) -> Result<(usize, MontyObject), monty::MontyException> {
-    let runner = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![], CompileOptions::default()).unwrap();
     let progress = runner
         .start(vec![], LimitedTracker::new(limits), PrintWriter::Stdout)
         .unwrap();
     let open_call = progress.into_os_call().expect("expected Open OsCall");
-    assert_eq!(open_call.function_call.name(), "Open");
+    assert_eq!(open_call.function_call.name(), "open");
     let progress = open_call
         .resume(MontyObject::FileHandle(handle), PrintWriter::Stdout)
         .unwrap();

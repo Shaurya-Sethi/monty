@@ -141,9 +141,9 @@ if (restored instanceof FunctionSnapshot) await restored.resume('value')
 ```
 
 `session.dump()` between feeds serializes an idle session instead; restore it
-with `await session.load(blob)` (which resolves to `void`) and keep feeding.
-Both `load` and `loadSnapshot` are valid only on a fresh session, before any
-feed; using the wrong one for a dump's kind throws.
+with `await session.loadSession(blob)` (which resolves to `void`) and keep
+feeding. Both `loadSession` and `loadSnapshot` are valid only on a fresh
+session, before any feed; using the wrong one for a dump's kind throws.
 
 ## Print Output
 
@@ -182,13 +182,22 @@ Mount host directories into the sandbox at virtual POSIX paths:
 ```ts
 import { MountDir } from '@pydantic/monty'
 
-const mount = new MountDir('/mnt/data', '/path/on/host', { mode: 'read-only' })
+const mount = new MountDir({ hostPath: '/path/on/host', virtualPath: '/mnt/data', mode: 'read-only' })
 await session.feedRun("open('/mnt/data/file.txt').read()", { mount })
 ```
 
+Each mount has a 100 MB aggregate memory budget by default. Configure it with
+`memoryUsageLimit`; retained overlay data and filesystem results share it, and
+operations that exceed it raise a `MontyRuntimeError` wrapping `MemoryError`.
+
 Modes: `'read-only'`, `'read-write'`, and `'overlay'` (default — writes are
-kept in worker memory and discarded at the end of the feed). OS calls mounts
-don't cover can be handled with the `os` callback:
+kept in memory and discarded at the end of the feed). Mount I/O is serviced
+on the host side of the pool, so mounts work even for remote workers.
+
+`feedRun` answers every OS call automatically: mounts get first refusal, then
+the `os` callback. `feedStart` answers none — a mounted read surfaces as a
+`FunctionSnapshot` with `isOsFunction` set, and `resumeAuto()` is what consults
+the mounts and `os`. OS calls mounts don't cover reach the `os` callback:
 
 ```ts
 import { NOT_HANDLED } from '@pydantic/monty'
@@ -218,8 +227,21 @@ external function or between feeds. Sessions with the limit also get an
 automatic backstop: the worker reports its execution time on every protocol
 turn and the host kills it `durationLimitGrace` (default 1s) after the
 remaining budget expires, covering cases where the in-sandbox limit cannot
-fire (e.g. a blocking syscall inside a mount). Set `durationLimitGrace: null`
-to disable it.
+fire (its check only runs at interpreter checkpoints). Set
+`durationLimitGrace: null` to disable it.
+
+## Assert message annotations
+
+Failed `assert` statements carry a pytest-style introspected message by
+default (`AssertionError: assert 2 == 5`) — a deliberate divergence from
+CPython's empty `AssertionError`. Each operand's repr is truncated to 120
+characters by default. Disable the messages per session to restore CPython's
+behavior, or pass an integer to customize the truncation length:
+
+```ts
+const session = await pool.checkout({ assertMessageAnnotations: false })
+const verbose = await pool.checkout({ assertMessageAnnotations: 1000 })
+```
 
 ## Type Checking
 
