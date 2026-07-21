@@ -6,6 +6,7 @@ use std::{
 };
 
 use hashbrown::HashTable;
+use monty_types::ResourceTracker;
 use serde::ser::SerializeStruct;
 use smallvec::{SmallVec, smallvec};
 
@@ -14,10 +15,9 @@ use crate::{
     args::{ArgValues, FromArgs, KwargsValues},
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunResult},
     heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
-    resource::ResourceTracker,
     types::Type,
     value::{EitherStr, VALUE_SIZE, Value},
 };

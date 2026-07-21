@@ -1,3 +1,11 @@
+use std::{
+    cell::Cell,
+    collections::hash_map::DefaultHasher,
+    fmt::Write,
+    hash::{Hash, Hasher},
+    mem,
+};
+
 /// Python named tuple type, combining tuple-like indexing with named attribute access.
 ///
 /// Named tuples are like regular tuples but with field names, providing two ways
@@ -15,23 +23,16 @@
 ///
 /// This type is used for `sys.version_info` and similar structured tuples where
 /// named access improves usability and readability.
-use std::{
-    cell::Cell,
-    collections::hash_map::DefaultHasher,
-    fmt::Write,
-    hash::{Hash, Hasher},
-    mem,
-};
+use monty_types::ResourceTracker;
 
 use super::PyTrait;
 use crate::{
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, RunResult},
+    exception_private::{ExcType, ExcTypeExt, RunResult},
     hash::HashValue,
     heap::{DropWithContext, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::{Interns, StringId},
-    resource::ResourceTracker,
     types::{Type, py_trait::LazyHeapSet},
     value::{EitherStr, Value},
 };

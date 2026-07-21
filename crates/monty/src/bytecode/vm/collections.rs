@@ -1,12 +1,13 @@
 //! Collection building and unpacking helpers for the VM.
 
+use monty_types::ResourceTracker;
+
 use super::VM;
 use crate::{
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, RunError, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunError, SimpleException},
     heap::{DropGuard, HeapData, HeapReadOutput},
     intern::StringId,
-    resource::ResourceTracker,
     types::{
         Dict, List, PyTrait, Set, Slice, allocate_tuple, collect_iterable, collect_iterable_bounded,
         slice::value_to_option_i64,

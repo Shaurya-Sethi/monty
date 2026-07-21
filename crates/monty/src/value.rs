@@ -6,6 +6,7 @@ use std::{
     str::FromStr,
 };
 
+use monty_types::{ResourceError, ResourceTracker};
 use num_bigint::BigInt;
 use num_integer::Integer;
 use num_traits::{FromPrimitive, ToPrimitive, Zero};
@@ -15,17 +16,14 @@ use crate::{
     builtins::Builtins,
     bytecode::{CallResult, VM},
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, RunError, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     fstring::FormatFloat,
     hash::{HashValue, hash_one, hash_python_long_int, hash_python_str},
     heap::{ContainsHeap, DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapReadOutput},
     identity::Identity,
     intern::{BytesId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
     modules::ModuleFunctions,
-    resource::{
-        ResourceError, ResourceTracker, check_div_size, check_lshift_size, check_mult_size, check_pow_size,
-        check_repeat_size,
-    },
+    resource_checks::{check_div_size, check_lshift_size, check_mult_size, check_pow_size, check_repeat_size},
     types::{
         Bytes, CmpOrder, LazyHeapSet, List, LongInt, MontyIter, Property, PyTrait, Type, allocate_tuple,
         bytes::{bytes_repr_fmt, get_byte_at_index},
@@ -2719,12 +2717,11 @@ fn bigint_pow(base: BigInt, exp: u64) -> BigInt {
 
 #[cfg(test)]
 mod tests {
+    use monty_types::{AssertMessageAnnotations, NoLimitTracker, PrintWriter};
     use num_bigint::BigInt;
 
     use super::*;
-    use crate::{
-        PrintWriter, heap::HeapReader, intern::InternerBuilder, resource::NoLimitTracker, run::AssertMessageAnnotations,
-    };
+    use crate::{heap::HeapReader, intern::InternerBuilder};
 
     /// Creates a heap and directly allocates a LongInt with the given BigInt value.
     ///
