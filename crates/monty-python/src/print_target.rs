@@ -21,8 +21,8 @@
 
 use std::sync::{Arc, Mutex, PoisonError};
 
-use monty::{DEFAULT_MAX_PRINT_COLLECT_BYTES, MontyException, PrintStream, check_print_collect_limit};
 use monty_proto::python::exc_py_to_monty;
+use monty_types::{DEFAULT_MAX_PRINT_COLLECT_BYTES, MontyException, PrintStream, check_print_collect_limit};
 use pyo3::{
     PyRef,
     exceptions::PyTypeError,

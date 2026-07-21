@@ -1,6 +1,12 @@
+//! Print-output plumbing: [`PrintStream`], [`PrintWriter`] and the
+//! [`PrintWriterCallback`] trait used by hosts to capture `print()` output.
+
 use std::borrow::Cow;
 
-use crate::{exception_private::ExcType, exception_public::MontyException, resource::ResourceError};
+use crate::{
+    exceptions::{ExcType, MontyException},
+    resource::ResourceError,
+};
 
 /// Default cap for [`PrintWriter::CollectString`] / [`PrintWriter::CollectStreams`]
 /// and the matching Python collectors.

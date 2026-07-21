@@ -1,3 +1,6 @@
+use std::{cmp::Ordering, fmt::Write};
+
+use ahash::AHashSet;
 /// Trait for heap-allocated Python values that need common operations.
 ///
 /// This trait abstracts over container types (List, Tuple, Str, Bytes) stored
@@ -9,20 +12,16 @@
 ///
 /// The trait is designed to work with `enum_dispatch` for efficient virtual
 /// dispatch on `HeapData` without boxing overhead.
-use std::{cmp::Ordering, fmt::Write};
-
-use ahash::AHashSet;
+use monty_types::{OsFunctionCall, ResourceError, ResourceTracker};
 
 use super::{MontyIter, Type, allocate_string};
 use crate::{
     args::ArgValues,
     bytecode::{CallResult, VM},
-    exception_private::{ExcType, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunResult, SimpleException},
     hash::HashValue,
     heap::{DropWithContext, HeapData, HeapId},
     intern::StringId,
-    os::OsFunctionCall,
-    resource::{ResourceError, ResourceTracker},
     value::{EitherStr, Value},
 };
 

@@ -1,5 +1,6 @@
 use std::{cmp::Ordering, fmt::Write, mem};
 
+use monty_types::{ResourceError, ResourceTracker};
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
@@ -8,10 +9,9 @@ use crate::{
     args::ArgValues,
     bytecode::{CallResult, ContainsVM, RecursionToken, VM},
     defer_drop, defer_drop_mut,
-    exception_private::{ExcType, RunError, RunResult, SimpleException},
+    exception_private::{ExcType, ExcTypeExt, RunError, RunResult, SimpleException},
     heap::{DropGuard, DropWithContext, Heap, HeapData, HeapId, HeapItem, HeapRead, HeapReadOutput, HeapReader},
     intern::StaticStrings,
-    resource::{ResourceError, ResourceTracker},
     sorting::parse_and_sort,
     types::{
         LazyHeapSet, Type,
@@ -1008,15 +1008,13 @@ impl<'h> PyTrait<'h> for HeapRead<'h, ListIterator> {
 
 #[cfg(test)]
 mod tests {
+    use monty_types::{AssertMessageAnnotations, NoLimitTracker, PrintWriter};
     use num_bigint::BigInt;
 
     use super::*;
     use crate::{
-        PrintWriter,
         heap::{Heap, HeapReader},
         intern::{InternerBuilder, Interns},
-        resource::NoLimitTracker,
-        run::AssertMessageAnnotations,
         types::LongInt,
     };
 

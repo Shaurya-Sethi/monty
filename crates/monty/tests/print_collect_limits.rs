@@ -7,8 +7,9 @@
 //!
 //! Loops stay at ~256 KiB — safe, not a real OOM.
 
-use monty::{
-    CompileOptions, ExcType, LimitedTracker, MontyRun, NoLimitTracker, PrintStream, PrintWriter, ResourceLimits,
+use monty::MontyRun;
+use monty_types::{
+    CompileOptions, ExcType, LimitedTracker, NoLimitTracker, PrintStream, PrintWriter, ResourceLimits,
 };
 
 /// One KiB payload reused across prints so heap growth stays small.
